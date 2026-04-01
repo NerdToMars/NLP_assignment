@@ -1,0 +1,33 @@
+[project]
+name = "nlp-assignment"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.11"
+dependencies = [
+    "accelerate>=1.13.0",
+    "datasets>=4.8.4",
+    "gliner>=0.2.24",
+    "ipykernel>=7.2.0",
+    "jupyter>=1.1.1",
+    "matplotlib>=3.10.8",
+    "nbformat>=5.10.4",
+    "numpy>=2.4.3",
+    "pandas>=3.0.2",
+    "scikit-learn>=1.8.0",
+    "seaborn>=0.13.2",
+    "seqeval>=1.2.2",
+    "torch>=2.5,<2.7",
+    "torchaudio>=2.5,<2.7",
+    "torchvision>=0.20,<0.22",
+    "tqdm>=4.67.3",
+    "transformers>=5.4.0",
+]
+
+[tool.uv.sources]
+torch = { index = "pytorch" }
+torchvision = { index = "pytorch" }
+torchaudio = { index = "pytorch" }
+
+[[tool.uv.index]]
+name = "pytorch"
+url = "https://download.pytorch.org/whl/cu124"

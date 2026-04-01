@@ -1,0 +1,22 @@
+{
+  "deberta_baseline": 0.568,
+  "deberta_focal": 0.541,
+  "deberta_multitask_definition": 0.559,
+  "deberta_multitask": 0.584,
+  "gliner": 0.317,
+  "deberta_combined": 0.566,
+  "deberta_definition": 0.57,
+  "deberta_multitask_synthetic": 0.571,
+  "deberta_synthetic_curriculum": 0.565,
+  "bilstm_crf": 0.262,
+  "deberta_crf": 0.571,
+  "deberta_crf_multitask": 0.562,
+  "recall_boost_ow02 (o_weight=0.2, seed=42)": 0.593,
+  "recall_ow02_s123 (o_weight=0.2, seed=123)": 0.603,
+  "recall_ow015_s42 (o_weight=0.15)": 0.594,
+  "rdrop_a1_s123": 0.596,
+  "rdrop_a1_s42": 0.588,
+  "fgm05_swa_s123": 0.589,
+  "fgm05_swa_s42": 0.579,
+  "5-model_ensemble (BEST)": 0.611
+}

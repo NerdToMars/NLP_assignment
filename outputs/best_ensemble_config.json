@@ -1,0 +1,50 @@
+{
+  "method": "5-model logit-averaging ensemble",
+  "relaxed_f1": 0.611,
+  "strict_f1": 0.434,
+  "relaxed_precision": 0.673,
+  "relaxed_recall": 0.559,
+  "bootstrap_ci_95": [
+    0.531,
+    0.682
+  ],
+  "models": [
+    {
+      "name": "recall_boost_ow02",
+      "file": "recall_boost_ow02_best.pt",
+      "single_f1": 0.593,
+      "config": "o_weight=0.2, seed=42, lr=1.5e-5"
+    },
+    {
+      "name": "recall_ow02_s123",
+      "file": "recall_ow02_s123_best.pt",
+      "single_f1": 0.603,
+      "config": "o_weight=0.2, seed=123, lr=1.5e-5"
+    },
+    {
+      "name": "rdrop_a1_s123",
+      "file": "rdrop_a1_s123_best.pt",
+      "single_f1": 0.596,
+      "config": "R-Drop alpha=1.0, o_weight=0.2, seed=123"
+    },
+    {
+      "name": "rdrop_a1_s42",
+      "file": "rdrop_a1_s42_best.pt",
+      "single_f1": 0.588,
+      "config": "R-Drop alpha=1.0, o_weight=0.2, seed=42"
+    },
+    {
+      "name": "fgm05_swa_s42_swa",
+      "file": "fgm05_swa_s42_swa.pt",
+      "single_f1": 0.571,
+      "config": "FGM epsilon=0.5, SWA avg epochs 10-14, seed=42"
+    }
+  ],
+  "techniques": [
+    "DeBERTa-v3-large backbone with multi-task learning (entity presence auxiliary head)",
+    "Aggressive O-class downweighting (weight=0.2) to boost entity recall",
+    "R-Drop consistency regularization (KL divergence between two forward passes)",
+    "FGM adversarial training with Stochastic Weight Averaging",
+    "5-model ensemble with logit averaging for prediction diversity"
+  ]
+}

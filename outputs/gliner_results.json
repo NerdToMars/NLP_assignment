@@ -1,0 +1,14 @@
+{
+  "strict_f1": 0.1724137931034483,
+  "strict_precision": 0.13100436681222707,
+  "strict_recall": 0.25210084033613445,
+  "relaxed_f1": 0.317,
+  "relaxed_precision": 0.3,
+  "relaxed_recall": 0.336,
+  "relaxed_f1_ClinicalImpacts": 0.305,
+  "relaxed_precision_ClinicalImpacts": 0.254,
+  "relaxed_recall_ClinicalImpacts": 0.381,
+  "relaxed_f1_SocialImpacts": 0.342,
+  "relaxed_precision_SocialImpacts": 0.451,
+  "relaxed_recall_SocialImpacts": 0.275
+}
