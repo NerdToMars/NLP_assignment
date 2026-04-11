@@ -1,12 +1,18 @@
 """Data loading and preprocessing for Reddit Impacts NER task."""
 
 import ast
-import re
 import pandas as pd
 import torch
 from torch.utils.data import Dataset
 from transformers import AutoTokenizer
 from typing import Optional
+
+from .preprocessing import (
+    DEFAULT_RUNTIME_PREPROCESSING,
+    RuntimePreprocessingConfig,
+    apply_runtime_preprocessing,
+    preprocess_tokens as runtime_preprocess_tokens,
+)
 
 
 LABEL2ID = {"O": 0, "B-ClinicalImpacts": 1, "I-ClinicalImpacts": 2, "B-SocialImpacts": 3, "I-SocialImpacts": 4}
@@ -35,24 +41,24 @@ def parse_list_col(x):
     raise TypeError(f"Unsupported type: {type(x)}")
 
 
-def load_dataframe(path: str) -> pd.DataFrame:
+def load_dataframe(
+    path: str,
+    apply_preprocessing: bool = True,
+    preprocessing_config: RuntimePreprocessingConfig = DEFAULT_RUNTIME_PREPROCESSING,
+) -> pd.DataFrame:
     df = pd.read_csv(path)
     df["tokens"] = df["tokens"].apply(parse_list_col)
     df["ner_tags"] = df["ner_tags"].apply(parse_list_col)
+    if "labels" in df.columns:
+        df["labels"] = df["labels"].apply(parse_list_col)
+    if apply_preprocessing:
+        df = apply_runtime_preprocessing(df, config=preprocessing_config)
     return df
 
 
 def preprocess_tokens(tokens: list[str]) -> list[str]:
-    """Minimal preprocessing: replace usernames and URLs with placeholders."""
-    out = []
-    for t in tokens:
-        if t.startswith("u/") or t.startswith("/u/"):
-            out.append("[USER]")
-        elif re.match(r"https?://", t):
-            out.append("[URL]")
-        else:
-            out.append(t)
-    return out
+    """Apply token-only runtime preprocessing."""
+    return runtime_preprocess_tokens(tokens)
 
 
 class NERDataset(Dataset):

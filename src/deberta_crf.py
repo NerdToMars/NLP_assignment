@@ -28,11 +28,11 @@ class LinearCRF(nn.Module):
                     if to_tag.startswith("I-"):
                         to_entity = to_tag[2:]
                         if from_tag == "O":
-                            self.transitions.data[j, i] = -10000.0
+                            self.transitions.data[i, j] = -10000.0
                         elif from_tag.endswith(to_entity):
                             pass  # Valid
                         else:
-                            self.transitions.data[j, i] = -10000.0
+                            self.transitions.data[i, j] = -10000.0
             # I- cannot start a sequence
             for j in range(self.num_tags):
                 if ID2LABEL.get(j, "O").startswith("I-"):
@@ -65,7 +65,7 @@ class LinearCRF(nn.Module):
 
         for i in range(1, seq_len):
             m = mask[:, i].bool()
-            trans = self.transitions[tags[:, i], tags[:, i - 1]]
+            trans = self.transitions[tags[:, i - 1], tags[:, i]]
             emit = emissions[:, i].gather(1, tags[:, i].unsqueeze(1)).squeeze(1)
             score = score + (trans + emit) * m.float()
 
@@ -112,7 +112,7 @@ class DeBERTaCRF(nn.Module):
     ):
         super().__init__()
         self.config = AutoConfig.from_pretrained(model_name)
-        self.encoder = AutoModel.from_pretrained(model_name, torch_dtype=torch.float32)
+        self.encoder = AutoModel.from_pretrained(model_name, dtype=torch.float32)
         self.dropout = nn.Dropout(dropout)
         self.num_labels = num_labels
 
@@ -167,7 +167,7 @@ class DeBERTaCRFMultiTask(nn.Module):
     ):
         super().__init__()
         self.config = AutoConfig.from_pretrained(model_name)
-        self.encoder = AutoModel.from_pretrained(model_name, torch_dtype=torch.float32)
+        self.encoder = AutoModel.from_pretrained(model_name, dtype=torch.float32)
         self.dropout = nn.Dropout(dropout)
         self.num_labels = num_labels
         self.aux_weight = aux_weight

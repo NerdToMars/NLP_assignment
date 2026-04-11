@@ -1,6 +1,5 @@
-def main():
-    print("Hello from nlp-assignment!")
+from run_experiments import main
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

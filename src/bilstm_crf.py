@@ -24,11 +24,11 @@ class CRF(nn.Module):
                     if to_tag.startswith("I-"):
                         to_entity = to_tag[2:]
                         if from_tag == "O":
-                            self.transitions.data[j, i] = -10000.0
+                            self.transitions.data[i, j] = -10000.0
                         elif from_tag.startswith("B-") or from_tag.startswith("I-"):
                             from_entity = from_tag[2:]
                             if from_entity != to_entity:
-                                self.transitions.data[j, i] = -10000.0
+                                self.transitions.data[i, j] = -10000.0
 
     def _tag_name(self, idx):
         from .data import ID2LABEL
@@ -60,7 +60,7 @@ class CRF(nn.Module):
 
         for i in range(1, seq_len):
             m = mask[:, i].bool()
-            trans = self.transitions[tags[:, i], tags[:, i - 1]]
+            trans = self.transitions[tags[:, i - 1], tags[:, i]]
             emit = emissions[:, i].gather(1, tags[:, i].unsqueeze(1)).squeeze(1)
             score = score + (trans + emit) * m.float()
 
