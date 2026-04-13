@@ -224,13 +224,11 @@ def run_model_soup(
         model = model.to(device)
         metrics = evaluate_model_crf(model, dev_dataset, dev_loader, device)
     elif model_type == "bilstm_crf":
-        _, dev_dataset, dev_loader = _build_bilstm_eval_bundle(data_dir_path, batch_size)
-        train_df = load_dataframe(data_dir_path / "new_train_data.csv")
-        word2idx = build_vocab(train_df)
-        model = BiLSTMCRF(vocab_size=len(word2idx), num_tags=NUM_LABELS)
-        model.load_state_dict(avg_state)
-        model = model.to(device)
-        metrics = evaluate_bilstm(model, dev_dataset, dev_loader, device)
+        raise ValueError(
+            "BiLSTM-CRF soup is currently disabled because the checkpoints do not store the "
+            "original training word2idx mapping. Rebuilding the vocab from the current dataset "
+            "can change embedding indices and makes weight-space averaging unsafe."
+        )
     else:
         raise AssertionError(f"Unexpected model_type: {model_type}")
 
