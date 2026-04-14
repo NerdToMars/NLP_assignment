@@ -1,0 +1,568 @@
+\documentclass[aspectratio=169,10pt]{beamer}
+
+\usetheme{metropolis}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta,shapes.geometric,fit,backgrounds}
+\usepackage{amsmath}
+\usepackage{colortbl}
+
+\tikzset{
+  block/.style={rectangle, draw=brand!70, fill=brand!10, rounded corners=2pt,
+                minimum height=5mm, minimum width=14mm, font=\scriptsize, inner sep=2pt, align=center},
+  op/.style={rectangle, draw=accent!70, fill=accent!10, rounded corners=2pt,
+             minimum height=5mm, minimum width=14mm, font=\scriptsize, inner sep=2pt, align=center},
+  label/.style={font=\tiny, text=neutral},
+  arr/.style={-{Stealth[length=1.4mm]}, thick, draw=neutral},
+}
+
+\definecolor{brand}{HTML}{1F4E79}
+\definecolor{accent}{HTML}{C0504D}
+\definecolor{good}{HTML}{2E7D32}
+\definecolor{neutral}{HTML}{555555}
+\setbeamercolor{frametitle}{bg=brand,fg=white}
+\setbeamercolor{progress bar}{fg=accent}
+
+\title{Extracting Social and Clinical Impacts of Substance Use from Reddit}
+\subtitle{CE7455 Project -- Group G26}
+\author{Ismail Elyamany \and Huang Chongtian \and Xia Yitong \and Zhu Ruijie}
+\institute{Nanyang Technological University}
+\date{April 2026}
+
+\newcommand{\sota}{\textcolor{accent}{\textbf{0.610}}}
+\newcommand{\ours}{\textcolor{good}{\textbf{0.609}}}
+
+\begin{document}
+
+% ---------- 1. Title ----------
+\begin{frame}[plain]
+  \titlepage
+\end{frame}
+
+% ---------- 2. The Task ----------
+\begin{frame}{The Task: Impact Extraction from Reddit}
+  \textbf{SMM4H--HeaRD 2026 Task 7.} Token-level NER on opioid-subreddit posts.
+  \medskip
+
+  Identify two entity types using BIO tagging:
+  \begin{itemize}
+    \item \textcolor{brand}{\textbf{ClinicalImpacts}} -- overdose, withdrawal, depression, insomnia \ldots
+    \item \textcolor{accent}{\textbf{SocialImpacts}} -- job loss, arrest, homelessness, broken relationships \ldots
+  \end{itemize}
+
+  \medskip
+  \textbf{Example}
+  \begin{quote}\small
+    ``I lost \textcolor{accent}{\underline{my job}} last month and ever since I've had
+    \textcolor{brand}{\underline{constant panic attacks}}.''
+  \end{quote}
+
+  \vfill
+  \footnotesize Useful for population-level signal mining from user-generated text -- public health surveillance, harm-reduction research.
+\end{frame}
+
+% ---------- 3. Why It's Hard ----------
+\begin{frame}{Why It's Hard}
+  \begin{columns}[T,onlytextwidth]
+    \column{0.55\textwidth}
+      \textbf{1. Train/Test Distribution Shift}
+      \begin{itemize}
+        \item Train is 75\% Clinical, 25\% Social.
+        \item Test is $\approx$30\% Clinical, 70\% Social.
+        \item Models trained on Train over-predict Clinical.
+      \end{itemize}
+      \medskip
+
+      \textbf{2. Implicit, Colloquial Language}
+      \begin{itemize}
+        \item ``those weeks were hell'' (Clinical)
+        \item ``I lost everything'' (Social)
+        \item No clinical vocabulary, no named triggers.
+      \end{itemize}
+    \column{0.45\textwidth}
+      \textbf{Reported Ceilings}
+      \begin{center}
+      \small
+      \begin{tabular}{lc}
+        \toprule
+        System & Relaxed F1 \\
+        \midrule
+        Human expert ($\kappa$) & 0.81 \\
+        DeBERTa (published SOTA) & \sota \\
+        GPT-4o 3-shot & 0.44 \\
+        \bottomrule
+      \end{tabular}
+      \end{center}
+      \bigskip
+      \footnotesize \textcolor{neutral}{Large 20-point gap between best model and human ceiling $\Rightarrow$ lots of headroom.}
+  \end{columns}
+\end{frame}
+
+% ---------- 4. Dataset ----------
+\begin{frame}{Dataset: Reddit-Impacts 2.0}
+  1{,}378 opioid-subreddit posts with BIO annotations.
+  \begin{center}
+    \includegraphics[width=0.95\textwidth]{fig_eda.png}
+  \end{center}
+  \vspace{-0.5em}
+  \footnotesize \textbf{Left:} Train/Dev are Clinical-heavy; Test flips to $\approx$70\,\% Social.
+  \textbf{Middle:} Social spans are longer and heavier-tailed than Clinical.
+  \textbf{Right:} most Dev posts contain no entities at all.
+  \medskip
+
+  \textbf{Preprocessing:} replace \texttt{@usernames} and URLs with placeholders; no lower-casing; first-subword alignment per tokenizer.
+\end{frame}
+
+% ---------- 5. Models ----------
+\begin{frame}{Four Architecturally Distinct Models}
+  \centering
+  \begin{tikzpicture}[node distance=3mm and 4mm]
+    %% --- BiLSTM-CRF ---
+    \node[block] (bl_emb) {GloVe-300d\\(frozen)};
+    \node[block, right=of bl_emb] (bl_drop) {Dropout};
+    \node[block, right=of bl_drop] (bl_lstm) {BiLSTM\\$2{\times}256$};
+    \node[block, right=of bl_lstm] (bl_lin) {Linear\\$512{\to}5$};
+    \node[op, right=of bl_lin] (bl_crf) {CRF\\Viterbi};
+    \draw[arr] (bl_emb) -- (bl_drop);
+    \draw[arr] (bl_drop) -- (bl_lstm);
+    \draw[arr] (bl_lstm) -- (bl_lin);
+    \draw[arr] (bl_lin) -- (bl_crf);
+    \node[label, left=1mm of bl_emb] {\textbf{BiLSTM-CRF}};
+
+    %% --- DeBERTa baseline ---
+    \node[block, below=6mm of bl_emb] (db_in) {tokens};
+    \node[block, right=of db_in] (db_enc) {DeBERTa-v3-large\\encoder (24 layers, $h{=}1024$)};
+    \node[block, right=of db_enc] (db_drop) {Dropout};
+    \node[block, right=of db_drop] (db_lin) {Linear\\$1024{\to}5$};
+    \node[op, right=of db_lin] (db_sm) {softmax\\per token};
+    \draw[arr] (db_in) -- (db_enc);
+    \draw[arr] (db_enc) -- (db_drop);
+    \draw[arr] (db_drop) -- (db_lin);
+    \draw[arr] (db_lin) -- (db_sm);
+    \node[label, left=1mm of db_in] {\textbf{DeBERTa-v3-large}};
+
+    %% --- GLiNER zero-shot ---
+    \node[block, below=6mm of db_in] (gl_in) {text};
+    \node[block, right=of gl_in] (gl_model) {gliner\_large-v2.1\\(pretrained, frozen)};
+    \node[block, right=of gl_model] (gl_lab) {28 sub-labels\\threshold 0.3};
+    \node[block, right=of gl_lab] (gl_map) {map to\\\{Clin, Soc\}};
+    \node[op, right=of gl_map] (gl_bio) {char-span\\$\to$ BIO};
+    \draw[arr] (gl_in) -- (gl_model);
+    \draw[arr] (gl_model) -- (gl_lab);
+    \draw[arr] (gl_lab) -- (gl_map);
+    \draw[arr] (gl_map) -- (gl_bio);
+    \node[label, left=1mm of gl_in] {\textbf{GLiNER (zero-shot)}};
+
+    %% --- Span NER ---
+    \node[block, below=6mm of gl_in] (sp_in) {tokens};
+    \node[block, right=of sp_in] (sp_enc) {DeBERTa\\encoder};
+    \node[block, right=of sp_enc] (sp_enum) {enumerate\\spans len${\le}15$};
+    \node[block, right=of sp_enum] (sp_repr) {$[h_s;h_e;w]$\\MLP};
+    \node[op, right=of sp_repr] (sp_dec) {greedy\\non-overlap};
+    \draw[arr] (sp_in) -- (sp_enc);
+    \draw[arr] (sp_enc) -- (sp_enum);
+    \draw[arr] (sp_enum) -- (sp_repr);
+    \draw[arr] (sp_repr) -- (sp_dec);
+    \node[label, left=1mm of sp_in] {\textbf{Span-based NER}};
+  \end{tikzpicture}
+
+  \vfill
+  \begin{center}\footnotesize
+  \begin{tabular}{lc}
+    \toprule
+    Model & Dev Relaxed F1 (best LR) \\
+    \midrule
+    BiLSTM-CRF & 0.285 \\
+    GLiNER zero-shot & 0.317 \\
+    DeBERTa baseline & \textbf{0.566} \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+  \footnotesize DeBERTa already dominates -- from here, everything builds on that encoder.
+\end{frame}
+
+% ---------- 6. Roadmap of Innovations ----------
+\begin{frame}{Our Strategy: Seven Targeted Innovations}
+  \footnotesize
+  \begin{enumerate}
+    \item \textbf{Focal loss} with test-aware class weights -- attacks distribution shift.
+    \item \textbf{Entity definition prompting} -- prepend definitions, mask from loss.
+    \item \textbf{Multi-task} auxiliary entity-presence head -- shapes the encoder.
+    \item \textbf{O-class downweighting} + multi-task -- bias the model toward recall.
+    \item \textbf{R-Drop} consistency regularization -- dropout-based calibration.
+    \item \textbf{FGM adversarial training + SWA} -- robust + averaged weights.
+    \item \textbf{Majority-vote ensemble search} -- diversity $>$ individual quality.
+  \end{enumerate}
+  \vfill
+  \textcolor{neutral}{\footnotesize Each innovation is evaluated with a small LR sweep (2e-5, 5e-5) and the best LR per family is reported. The winners are not the ones we expected going in.}
+\end{frame}
+
+% ---------- 7. Innovation 1: Focal Loss ----------
+\begin{frame}{Innovation 1: Distribution-Aware Focal Loss}
+  Focal loss with $\gamma=2.0$ and Social class weight $\times 1.5$.
+  \medskip
+  \begin{center}\small
+  \begin{tabular}{lcc}
+    \toprule
+    & Relaxed F1 & Strict F1 \\
+    \midrule
+    DeBERTa baseline & \textbf{0.566} & 0.400 \\
+    + Focal loss & 0.528 & 0.290 \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+  \medskip
+
+  \textbf{Finding:} aggressive Social reweighting pushes the model to over-fire on
+  Social tokens. Both relaxed and strict F1 drop sharply ($-0.038$ / $-0.110$).
+
+  \medskip
+  \textcolor{neutral}{\footnotesize Lesson: distribution shift is real, but class weighting is the wrong lever for it.}
+\end{frame}
+
+% ---------- 8a. Innovation 2 ----------
+\begin{frame}{Innovation 2: Definition Prompting}
+  Prepend natural-language \emph{definitions} of both entity types before the post; mask them from the loss.
+  \medskip
+
+  \begin{center}\scriptsize
+  \begin{tikzpicture}[node distance=2mm]
+    \node[block, fill=brand!15, text width=10.2cm] (def) {%
+      \texttt{[CLS]} \textit{Clinical Impacts are physical or psychological consequences $\ldots$ overdose, withdrawal, $\ldots$ Social Impacts are social, occupational, legal $\ldots$ job loss, arrest, $\ldots$} \texttt{[SEP]}};
+    \node[block, fill=accent!15, below=of def, text width=10.2cm] (text) {%
+      \texttt{I lost my job last month and had constant panic attacks . [SEP]}};
+    \node[block, fill=neutral!15, below=of text, text width=10.2cm] (labels) {%
+      \textbf{Labels:} \texttt{-100 -100 $\ldots$ -100} $\mid$ \texttt{O B-Soc I-Soc O O O B-Clin I-Clin I-Clin O}};
+    \draw[arr] (def) -- (text);
+    \draw[arr] (text) -- (labels);
+  \end{tikzpicture}
+  \end{center}
+  \smallskip
+
+  \footnotesize \textbf{Mechanism:} \texttt{-100} on prefix $\Rightarrow$ definition tokens contribute \emph{attention context} but no gradient. The encoder sees an explicit label ontology on every example.
+
+  \begin{center}\footnotesize
+  \begin{tabular}{lcc}
+    \toprule
+    & Relaxed F1 & Strict F1 \\
+    \midrule
+    DeBERTa baseline & 0.566 & 0.400 \\
+    + Definition prompting & \textbf{0.572} ($+0.006$) & \textbf{0.402} \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+\end{frame}
+
+% ---------- 8b. Innovation 3 ----------
+\begin{frame}{Innovation 3: Multi-task Auxiliary Head}
+  Share the DeBERTa encoder between token NER and a sentence-level \emph{entity-presence} classifier.
+
+  \begin{center}\scriptsize
+  \begin{tikzpicture}[node distance=1.5mm and 3mm]
+    \node[block, text width=2.0cm] (toks) {\texttt{I lost my job$\ldots$}};
+    \node[block, right=of toks, text width=1.8cm] (enc) {DeBERTa\\encoder};
+    \node[block, right=of enc, text width=1.6cm] (cls) {\texttt{[CLS]}\\hidden};
+    \node[block, above right=of cls, text width=2.2cm] (main) {Linear $1024{\to}5$\\token CE};
+    \node[block, below right=of cls, fill=good!15, text width=2.4cm] (aux) {Linear $1024{\to}2$\\``has entity?''};
+    \draw[arr] (toks) -- (enc);
+    \draw[arr] (enc) -- (cls);
+    \draw[arr] (cls) -- (main);
+    \draw[arr] (cls) -- (aux);
+  \end{tikzpicture}
+  \end{center}
+
+  \footnotesize
+  $\displaystyle \mathcal{L} = \text{CE}_{\text{token}} + 0.3 \cdot \text{CE}_{\text{presence}},$ where
+  $\text{presence} = \mathbb{1}[\text{sentence has any B/I tag}]$.
+  \smallskip
+
+  \textbf{Result.} Relaxed F1 $= 0.529$ ($-0.037$ vs baseline $0.566$).
+  \smallskip
+
+  \textbf{Under the LR sweep, multi-task actually \emph{hurts}} -- the auxiliary signal competes with the token objective for encoder capacity on this small dataset.
+\end{frame}
+
+% ---------- 9. Innovation 4: Recall Boost ----------
+\begin{frame}{Innovation 4: Recall Boost via O-class Downweighting}
+  \textbf{Diagnosis.} Error analysis showed recall lagging precision:
+  29 missed spans, 13 of them single-token implicit expressions.
+  \medskip
+
+  \textbf{Intervention.} Cross-entropy weight on the \texttt{O} class: $1.0 \to 0.2$.
+  Entity classes keep weight $1.0$ (Social $\times 1.5$). Combined with multi-task.
+  \medskip
+
+  \begin{center}\small
+  \begin{tabular}{lcc}
+    \toprule
+    & Relaxed F1 & Strict F1 \\
+    \midrule
+    DeBERTa baseline & 0.566 & 0.400 \\
+    Recall-Boost (seed 42) & \textbf{0.573} & 0.321 \\
+    Recall-Boost (seed 123) & 0.567 & 0.355 \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+  \medskip
+
+  \textbf{Effect:} small relaxed-F1 gain ($+0.007$), and the model trades precision for recall.
+  Not a blockbuster alone, \emph{but} it produces errors that complement the other recipes --
+  which matters for the ensemble.
+\end{frame}
+
+% ---------- 11. Innovation 5: R-Drop ----------
+\begin{frame}{Innovation 5: R-Drop Consistency Regularization}
+  Two stochastic forward passes on the \emph{same} batch, then force their distributions to agree.
+  \medskip
+
+  \centering
+  \begin{tikzpicture}[node distance=4mm and 6mm]
+    \node[block, text width=2.1cm] (batch) {mini-batch\\$x$};
+    \node[block, right=of batch, fill=brand!15, text width=2.5cm] (fwd1) {DeBERTa forward\\(dropout mask $m_1$)};
+    \node[block, right=of fwd1, text width=1.8cm] (p1) {$p_1$};
+    \node[block, below=10mm of fwd1, fill=brand!15, text width=2.5cm] (fwd2) {DeBERTa forward\\(dropout mask $m_2$)};
+    \node[block, right=of fwd2, text width=1.8cm] (p2) {$p_2$};
+    \node[op, right=10mm of p1, text width=4.5cm] (loss) {%
+      $\mathcal{L} = \tfrac{1}{2}(\text{CE}(p_1) + \text{CE}(p_2))$\\$\; +\; \alpha\cdot \mathrm{KL}_{\mathrm{sym}}(p_1 \,\|\, p_2)$};
+    \draw[arr] (batch) -- (fwd1);
+    \draw[arr] (batch.east) -- ++(2mm,0) |- (fwd2.west);
+    \draw[arr] (fwd1) -- (p1);
+    \draw[arr] (fwd2) -- (p2);
+    \draw[arr] (p1) -- (loss);
+    \draw[arr] (p2.east) -| (loss.south);
+  \end{tikzpicture}
+  \medskip
+
+  \footnotesize
+  $\alpha = 1.0$, symmetric KL over non-masked tokens only. No new parameters --
+  dropout itself is turned into a regularizer that punishes unstable predictions.
+  \medskip
+
+  \begin{center}\footnotesize
+  \begin{tabular}{lcc}
+    \toprule
+    & Relaxed F1 & $\Delta$ vs baseline \\
+    \midrule
+    DeBERTa baseline & 0.566 & -- \\
+    + R-Drop (seed 123) & \textbf{0.577} & $+0.011$ \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+\end{frame}
+
+% ---------- 11b. Innovation 6: FGM + SWA ----------
+\begin{frame}{Innovation 6: FGM Adversarial + SWA}
+  \begin{columns}[T,onlytextwidth]
+    \column{0.48\textwidth}
+    \textbf{FGM} (per training step)
+    \smallskip
+
+    \centering
+    \begin{tikzpicture}[node distance=1.8mm and 3mm]
+      \node[block, text width=3.6cm] (f1) {clean forward $\to$\\loss $\mathcal{L}$, grad $g$};
+      \node[op, below=of f1, text width=3.6cm] (pert) {$w \leftarrow w + \varepsilon \cdot g / \lVert g \rVert$\\on \texttt{word\_embeddings}};
+      \node[block, below=of pert, text width=3.6cm] (f2) {adversarial forward $\to$\\loss $\mathcal{L}_{\text{adv}}$, grad $g_{\text{adv}}$};
+      \node[op, below=of f2, text width=3.6cm] (rest) {restore $w$, step with\\$g + g_{\text{adv}}$};
+      \draw[arr] (f1) -- (pert);
+      \draw[arr] (pert) -- (f2);
+      \draw[arr] (f2) -- (rest);
+    \end{tikzpicture}
+    \smallskip
+
+    \scriptsize $\varepsilon = 0.5$; perturbation lives only on the embedding layer.
+
+    \column{0.48\textwidth}
+    \textbf{SWA} (stochastic weight averaging)
+    \smallskip
+
+    \centering
+    \begin{tikzpicture}[x=0.52cm,y=0.38cm]
+      \draw[neutral,->,thick] (0,0) -- (8.3,0) node[right,font=\tiny]{ep};
+      \foreach \e in {1,2,...,8}{\draw[neutral,thin] (\e,0) -- (\e,-0.08);\node[font=\tiny, below=0pt] at (\e,-0.08) {\e};}
+      \fill[good!25] (5.5,-0.15) rectangle (8.2,2.2);
+      \node[font=\scriptsize, good] at (6.85,2.5) {avg last 5};
+      \foreach \e/\y in {1/0.4,2/0.9,3/1.3,4/1.55,5/1.75,6/1.68,7/1.85,8/1.78}
+        {\fill[brand!70] (\e,\y) circle (0.1);}
+      \draw[brand!70,thick]
+        (1,0.4) -- (2,0.9) -- (3,1.3) -- (4,1.55) -- (5,1.75) -- (6,1.68) -- (7,1.85) -- (8,1.78);
+      \node[font=\tiny, neutral, rotate=90] at (-0.4,1.2) {Dev F1};
+    \end{tikzpicture}
+    \smallskip
+
+    \scriptsize After epoch 10, running mean of \texttt{state\_dict} over remaining epochs $\to$ final checkpoint. Smooths end-of-training oscillation.
+  \end{columns}
+  \vfill
+
+  \begin{center}\footnotesize
+  \begin{tabular}{lcc}
+    \toprule
+    & Relaxed F1 & $\Delta$ vs baseline \\
+    \midrule
+    DeBERTa baseline & 0.566 & -- \\
+    + FGM + SWA (seed 42) & \textbf{0.579} & $+0.013$ \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+  \footnotesize \textbf{Best single model in the project.}
+\end{frame}
+
+% ---------- 11b. Training dynamics ----------
+\begin{frame}{Training Dynamics Across Recipes}
+  Per-epoch dev relaxed F1 and validation loss for the top single-model families
+  (best LR per family, on \texttt{outputs\_new\_final\_clean}).
+  \begin{center}
+    \includegraphics[width=0.98\textwidth]{fig_training_curves.png}
+  \end{center}
+  \vspace{-0.4em}
+  \footnotesize
+  \textbf{Left:} FGM+SWA, R-Drop and Recall-Boost all plateau around epoch 6--8; the extra recipes give
+  a modest lift over the baseline, not a regime change.
+  \textbf{Right:} Recall-Boost and R-Drop keep the dev loss noticeably lower and more stable late
+  in training -- regularization is doing real work, even when the F1 curve has flattened.
+\end{frame}
+
+% ---------- 12. Ensemble ----------
+\begin{frame}{Innovation 7: Ensemble Search -- Majority Vote Wins}
+  Exhaustive search over subsets of the top 9 LR-selected models,
+  evaluating both majority vote and probability average.
+  \medskip
+
+  \begin{center}\footnotesize
+  \begin{tabular}{lcccc}
+    \toprule
+    Ensemble & Relaxed F1 & Strict F1 & Precision & Recall \\
+    \midrule
+    2 models (majority) & 0.604 & 0.331 & 0.580 & 0.631 \\
+    3 models (majority) & 0.605 & 0.352 & 0.618 & 0.592 \\
+    4 models (majority) & 0.609 & 0.377 & 0.630 & 0.590 \\
+    \rowcolor{good!15}
+    \textbf{5 models (majority)} & \ours & \textbf{0.379} & 0.626 & 0.592 \\
+    \midrule
+    Best probability average & 0.602 & 0.423 & 0.653 & 0.559 \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+  \medskip
+
+  \textbf{Best ensemble:} FGM+SWA (s42) $+$ R-Drop (s123) $+$ recall-boost (s42, s123) $+$ definition prompting.
+  \medskip
+
+  \textbf{Essentially matches published SOTA \sota{} on dev} ($-0.001$).
+  \textcolor{neutral}{\footnotesize Training-objective diversity beats seed diversity; hard voting beats soft averaging here.}
+\end{frame}
+
+% ---------- 13. Full Ablation ----------
+\begin{frame}{Full Ablation Table (LR-Selected per Family)}
+  \centering\scriptsize
+  \begin{tabular}{lcccc}
+    \toprule
+    Model & Relaxed F1 & Strict F1 & Best LR & Epoch \\
+    \midrule
+    BiLSTM-CRF & 0.285 & 0.274 & 5e-4 & 15 \\
+    DeBERTa baseline & 0.566 & 0.400 & 2e-5 & 7 \\
+    \quad + Focal loss & 0.528 & 0.290 & 5e-5 & 6 \\
+    \quad + Definition prompting & 0.572 & 0.402 & 5e-5 & 5 \\
+    \quad + Multi-task & 0.529 & 0.370 & 2e-5 & 9 \\
+    Hierarchical pipeline & 0.543 & 0.340 & 2e-5 & -- \\
+    Recall-Boost (seed 42) & 0.573 & 0.321 & 2e-5 & 7 \\
+    Recall-Boost (seed 123) & 0.567 & 0.355 & 2e-5 & 10 \\
+    R-Drop (seed 123) & 0.577 & 0.342 & 2e-5 & 9 \\
+    \textbf{FGM + SWA (seed 42)} & \textbf{0.579} & \textbf{0.348} & 2e-5 & 10 \\
+    \rowcolor{good!15}
+    \textbf{5-Model Ensemble (majority vote)} & \ours & \textbf{0.379} & -- & -- \\
+    \midrule
+    \textit{GPT-4o 3-shot (reported)} & \textit{0.440} & -- & -- & -- \\
+    \textit{DeBERTa (published SOTA)} & \textit{0.610} & -- & -- & -- \\
+    \bottomrule
+  \end{tabular}
+  \vfill
+  \footnotesize Dev-set evaluation. Each family has its own LR sweep; the row reports the best LR.
+\end{frame}
+
+% ---------- 14. Error Analysis ----------
+\begin{frame}{Error Analysis on the Best Single Model}
+  FGM+SWA (seed 42), Relaxed F1 $= 0.579$, Strict F1 $= 0.348$.
+  \medskip
+  \begin{columns}[T,onlytextwidth]
+    \column{0.48\textwidth}
+      \textbf{Error categories (Dev)}
+      \begin{itemize}
+        \item \textbf{Boundary errors} dominate -- Relaxed/Strict gap of $\approx 0.23$.
+        \item Missed spans concentrated on single-token implicit expressions.
+        \item Long multi-word Social spans get partial matches.
+        \item Type confusion is rare.
+      \end{itemize}
+    \column{0.48\textwidth}
+      \textbf{Qualitative observations}
+      \begin{itemize}
+        \item Implicit: ``those weeks were hell'' often missed.
+        \item ``charged with disorderly conduct'' $\to$ partial span.
+        \item Negated phrases correctly rejected.
+        \item Third-person references mostly ignored.
+      \end{itemize}
+  \end{columns}
+  \vfill
+  \textcolor{neutral}{\footnotesize Boundary errors and implicit false negatives are the two buckets that would pay off most for future work.}
+\end{frame}
+
+% ---------- 15. Key Insights ----------
+\begin{frame}{Three Key Insights}
+  \begin{enumerate}
+    \item \textbf{LR sweeps are non-negotiable.}
+          Several innovations looked positive at a single LR but turned negative
+          under a proper sweep -- most dramatically multi-task training ($-0.037$).
+    \smallskip
+    \item \textbf{Training-objective diversity beats individual model polish.}
+          Single models plateau around $0.58$; a 5-model majority-vote ensemble
+          climbs to \ours{} -- a $+0.03$ jump from combining \emph{different recipes}, not more seeds.
+    \smallskip
+    \item \textbf{Majority vote beats probability averaging.}
+          On this small, noisy dev set, hard voting ($0.609$) is more robust
+          than soft averaging ($0.602$). Confident-but-occasionally-wrong
+          models don't combine well via logits.
+  \end{enumerate}
+\end{frame}
+
+% ---------- 16. Limitations ----------
+\begin{frame}{Limitations \& Future Work}
+  \textbf{Limitations}
+  \begin{itemize}
+    \item Dev-set only -- no test-set access; numbers will likely shift under the real 70\,\% Social distribution.
+    \item Our ensemble \emph{matches} the published SOTA ($0.609$ vs $0.610$); the edge, if any, is within noise on 258 samples.
+    \item Single-sentence inputs -- no cross-post user-history context.
+  \end{itemize}
+  \medskip
+
+  \textbf{Future work}
+  \begin{itemize}
+    \item LLM-generated synthetic data (Claude / GPT-4o) targeting implicit Social cases.
+    \item Greedy forward selection for principled ensemble membership.
+    \item Cross-domain transfer from biomedical NER corpora.
+    \item Instruction-tuned Llama-3 with task-specific prompts.
+  \end{itemize}
+\end{frame}
+
+% ---------- 17. Summary ----------
+\begin{frame}{Summary}
+  \begin{itemize}
+    \item \textbf{Task:} BIO NER for Clinical/Social impacts of substance use on Reddit.
+    \item \textbf{Models:} BiLSTM-CRF, GLiNER, Span-NER, DeBERTa-v3-large.
+    \item \textbf{7 innovations}, each evaluated under an LR sweep.
+    \item \textbf{Best single model:} FGM + SWA (seed 42), $F_{1}=0.579$.
+    \item \textbf{Best system:} 5-model majority-vote ensemble,
+          $F_{1} = \ours$, essentially matching the published SOTA \sota{} on dev.
+    \item \textbf{Main takeaway:} training-objective diversity + majority voting $>$ any single-model trick we tried.
+  \end{itemize}
+\end{frame}
+
+% % ---------- 18. Thanks ----------
+% \begin{frame}[standout]
+%   Thank you.\\
+%   \vspace{1em}
+%   \Large Questions?
+% \end{frame}
+
+\end{document}

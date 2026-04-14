@@ -1,12 +1,18 @@
 """Data loading and preprocessing for Reddit Impacts NER task."""
 
 import ast
-import re
 import pandas as pd
 import torch
 from torch.utils.data import Dataset
 from transformers import AutoTokenizer
 from typing import Optional
+
+from .preprocessing import (
+    DEFAULT_RUNTIME_PREPROCESSING,
+    RuntimePreprocessingConfig,
+    apply_runtime_preprocessing,
+    preprocess_tokens as runtime_preprocess_tokens,
+)
 
 
 LABEL2ID = {"O": 0, "B-ClinicalImpacts": 1, "I-ClinicalImpacts": 2, "B-SocialImpacts": 3, "I-SocialImpacts": 4}
@@ -26,6 +32,9 @@ SOCIAL_DEFINITION = (
 )
 ENTITY_DEFINITION_PREFIX = f"{CLINICAL_DEFINITION} {SOCIAL_DEFINITION}"
 
+_RUNTIME_PREPROCESSING_ENABLED = False
+_RUNTIME_PREPROCESSING_CONFIG = DEFAULT_RUNTIME_PREPROCESSING
+
 
 def parse_list_col(x):
     if isinstance(x, list):
@@ -35,24 +44,58 @@ def parse_list_col(x):
     raise TypeError(f"Unsupported type: {type(x)}")
 
 
-def load_dataframe(path: str) -> pd.DataFrame:
+def set_runtime_preprocessing(
+    enabled: bool,
+    preprocessing_config: RuntimePreprocessingConfig = DEFAULT_RUNTIME_PREPROCESSING,
+) -> None:
+    """Set the default runtime preprocessing behavior for loaders and datasets."""
+
+    global _RUNTIME_PREPROCESSING_ENABLED, _RUNTIME_PREPROCESSING_CONFIG
+    _RUNTIME_PREPROCESSING_ENABLED = bool(enabled)
+    _RUNTIME_PREPROCESSING_CONFIG = preprocessing_config
+
+
+def get_runtime_preprocessing_enabled() -> bool:
+    """Return the current default preprocessing toggle."""
+
+    return _RUNTIME_PREPROCESSING_ENABLED
+
+
+def load_dataframe(
+    path: str,
+    apply_preprocessing: bool | None = None,
+    preprocessing_config: RuntimePreprocessingConfig | None = None,
+) -> pd.DataFrame:
+    if apply_preprocessing is None:
+        apply_preprocessing = _RUNTIME_PREPROCESSING_ENABLED
+    if preprocessing_config is None:
+        preprocessing_config = _RUNTIME_PREPROCESSING_CONFIG
+
     df = pd.read_csv(path)
     df["tokens"] = df["tokens"].apply(parse_list_col)
     df["ner_tags"] = df["ner_tags"].apply(parse_list_col)
+    if "labels" in df.columns:
+        df["labels"] = df["labels"].apply(parse_list_col)
+    if apply_preprocessing:
+        df = apply_runtime_preprocessing(df, config=preprocessing_config)
     return df
 
 
-def preprocess_tokens(tokens: list[str]) -> list[str]:
-    """Minimal preprocessing: replace usernames and URLs with placeholders."""
-    out = []
-    for t in tokens:
-        if t.startswith("u/") or t.startswith("/u/"):
-            out.append("[USER]")
-        elif re.match(r"https?://", t):
-            out.append("[URL]")
-        else:
-            out.append(t)
-    return out
+def preprocess_tokens(
+    tokens: list[str],
+    apply_preprocessing: bool | None = None,
+    preprocessing_config: RuntimePreprocessingConfig | None = None,
+) -> list[str]:
+    """Apply optional token-only runtime preprocessing."""
+
+    if apply_preprocessing is None:
+        apply_preprocessing = _RUNTIME_PREPROCESSING_ENABLED
+    if not apply_preprocessing:
+        return [str(token) for token in tokens]
+
+    if preprocessing_config is None:
+        preprocessing_config = _RUNTIME_PREPROCESSING_CONFIG
+    return runtime_preprocess_tokens(tokens, config=preprocessing_config)
 
 
 class NERDataset(Dataset):
@@ -64,6 +107,8 @@ class NERDataset(Dataset):
         tokenizer: AutoTokenizer,
         max_length: int = 512,
         definition_prompting: bool = False,
+        apply_preprocessing: bool | None = None,
+        preprocessing_config: RuntimePreprocessingConfig | None = None,
     ):
         self.samples = []
         self.tokenizer = tokenizer
@@ -71,7 +116,11 @@ class NERDataset(Dataset):
         self.definition_prompting = definition_prompting
 
         for _, row in df.iterrows():
-            tokens = preprocess_tokens(row["tokens"])
+            tokens = preprocess_tokens(
+                row["tokens"],
+                apply_preprocessing=apply_preprocessing,
+                preprocessing_config=preprocessing_config,
+            )
             ner_tags = row["ner_tags"]
             label_ids = [LABEL2ID[t] for t in ner_tags]
 
@@ -199,12 +248,23 @@ class NERDataset(Dataset):
 class BiLSTMDataset(Dataset):
     """Dataset for BiLSTM-CRF using word-level tokens."""
 
-    def __init__(self, df: pd.DataFrame, word2idx: dict, max_length: int = 256):
+    def __init__(
+        self,
+        df: pd.DataFrame,
+        word2idx: dict,
+        max_length: int = 256,
+        apply_preprocessing: bool | None = None,
+        preprocessing_config: RuntimePreprocessingConfig | None = None,
+    ):
         self.samples = []
         self.max_length = max_length
 
         for _, row in df.iterrows():
-            tokens = preprocess_tokens(row["tokens"])
+            tokens = preprocess_tokens(
+                row["tokens"],
+                apply_preprocessing=apply_preprocessing,
+                preprocessing_config=preprocessing_config,
+            )
             ner_tags = row["ner_tags"]
 
             token_ids = [word2idx.get(t.lower(), word2idx.get("<UNK>", 1)) for t in tokens]

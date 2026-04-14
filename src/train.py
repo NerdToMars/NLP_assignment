@@ -1,5 +1,6 @@
 """Training and evaluation script for all models."""
 
+import gc
 import os
 import json
 import argparse
@@ -22,9 +23,67 @@ from .bilstm_crf import BiLSTMCRF
 from .deberta_ner import DeBERTaNER, DeBERTaNERMultiTask, SpanNER, FocalLoss
 from .deberta_crf import DeBERTaCRF, DeBERTaCRFMultiTask
 from .synthetic_data import generate_synthetic_data, get_curriculum_order
+from .checkpoints import TopKCheckpointManager
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "SMM4H-HeaRD-2026-Task-7-Reddit-Impacts2", "dataset")
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "..", "outputs")
+
+
+def _clear_torch_memory():
+    """Best-effort cleanup for sequential experiment runs."""
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
+def _init_early_stopping(early_stopping_patience=5, early_stopping_min_delta=0.0):
+    """Create mutable early-stopping state or disable it."""
+    if early_stopping_patience is None:
+        return None
+
+    patience = int(early_stopping_patience)
+    if patience <= 0:
+        return None
+
+    return {
+        "patience": patience,
+        "min_delta": float(early_stopping_min_delta),
+        "monitor": "dev_loss",
+        "mode": "min",
+        "best_value": float("inf"),
+        "epochs_without_improvement": 0,
+    }
+
+
+def _early_stopping_status(early_stopping):
+    """Human-readable description for logs."""
+    if early_stopping is None:
+        return "disabled"
+    return (
+        f"monitor={early_stopping['monitor']}, "
+        f"mode={early_stopping['mode']}, "
+        f"patience={early_stopping['patience']}, "
+        f"min_delta={early_stopping['min_delta']}"
+    )
+
+
+def _update_early_stopping(early_stopping, score):
+    """Update early-stopping state and return whether training should stop."""
+    if early_stopping is None:
+        return False
+
+    if score is not None and np.isfinite(score):
+        improved = score < early_stopping["best_value"] - early_stopping["min_delta"]
+    else:
+        improved = False
+
+    if improved:
+        early_stopping["best_value"] = float(score)
+        early_stopping["epochs_without_improvement"] = 0
+        return False
+
+    early_stopping["epochs_without_improvement"] += 1
+    return early_stopping["epochs_without_improvement"] >= early_stopping["patience"]
 
 
 def get_entity_weights(df, smoothing=0.3):
@@ -61,6 +120,37 @@ def derive_entity_presence_labels(labels_batch):
     return torch.tensor(presence, dtype=torch.long)
 
 
+def _make_checkpoint_manager(experiment_name, model_type, model_name=None, top_k_checkpoints=5, **metadata):
+    """Create a top-k checkpoint manager for a training run."""
+
+    run_metadata = {"model_type": model_type}
+    if model_name is not None:
+        run_metadata["model_name"] = model_name
+    run_metadata.update(metadata)
+    return TopKCheckpointManager(
+        experiment_name=experiment_name,
+        output_dir=OUTPUT_DIR,
+        top_k=top_k_checkpoints,
+        metadata=run_metadata,
+    )
+
+
+def _maybe_save_strict_best_state_dict(state_dict, dev_results, experiment_name, best_dev_strict_f1):
+    """Persist a dedicated strict-F1-best checkpoint alongside the relaxed-best one."""
+
+    strict_f1 = float(dev_results.get("strict_f1", float("-inf")))
+    if not np.isfinite(strict_f1):
+        return best_dev_strict_f1
+
+    if strict_f1 > best_dev_strict_f1:
+        save_path = os.path.join(OUTPUT_DIR, f"{experiment_name}_strict_best.pt")
+        torch.save(state_dict, save_path)
+        print(f"  -> New best dev Strict F1: {strict_f1:.4f} (saved to {save_path})")
+        return strict_f1
+
+    return best_dev_strict_f1
+
+
 def train_deberta(
     model_name="microsoft/deberta-v3-large",
     use_focal_loss=False,
@@ -73,6 +163,11 @@ def train_deberta(
     lr=2e-5,
     device="cuda:0",
     experiment_name="deberta_baseline",
+    top_k_checkpoints=5,
+    early_stopping_patience=5,
+    early_stopping_min_delta=0.0,
+    train_df_override=None,
+    dev_df_override=None,
 ):
     """Train DeBERTa-based NER model with optional innovations."""
     print(f"\n{'='*60}")
@@ -80,13 +175,15 @@ def train_deberta(
     print(f"  Model: {model_name}")
     print(f"  Focal Loss: {use_focal_loss} | Definitions: {definition_prompting}")
     print(f"  Multi-task: {use_multitask} | Synthetic: {use_synthetic} | Curriculum: {use_curriculum}")
+    early_stopping = _init_early_stopping(early_stopping_patience, early_stopping_min_delta)
+    print(f"  Early stopping: {_early_stopping_status(early_stopping)}")
     print(f"{'='*60}\n")
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     # Load data
-    train_df = load_dataframe(os.path.join(DATA_DIR, "new_train_data.csv"))
-    dev_df = load_dataframe(os.path.join(DATA_DIR, "new_dev_data.csv"))
+    train_df = train_df_override.copy() if train_df_override is not None else load_dataframe(os.path.join(DATA_DIR, "new_train_data.csv"))
+    dev_df = dev_df_override.copy() if dev_df_override is not None else load_dataframe(os.path.join(DATA_DIR, "new_dev_data.csv"))
 
     # Add synthetic data if requested
     if use_synthetic:
@@ -141,12 +238,27 @@ def train_deberta(
     if loss_fn is not None and hasattr(loss_fn, 'alpha') and loss_fn.alpha is not None:
         loss_fn.alpha = loss_fn.alpha.to(device)
 
+    checkpoint_manager = _make_checkpoint_manager(
+        experiment_name=experiment_name,
+        model_type="deberta_multitask" if use_multitask else "deberta",
+        model_name=model_name,
+        top_k_checkpoints=top_k_checkpoints,
+        use_focal_loss=use_focal_loss,
+        definition_prompting=definition_prompting,
+        use_multitask=use_multitask,
+        use_synthetic=use_synthetic,
+        use_curriculum=use_curriculum,
+        early_stopping_patience=early_stopping_patience,
+        early_stopping_min_delta=early_stopping_min_delta,
+    )
+
     # Optimizer
     optimizer = AdamW(model.parameters(), lr=lr, weight_decay=0.01)
     total_steps = len(train_loader) * epochs
     scheduler = get_linear_schedule_with_warmup(optimizer, int(0.1 * total_steps), total_steps)
 
     best_dev_f1 = 0.0
+    best_dev_strict_f1 = 0.0
     results_log = []
 
     for epoch in range(epochs):
@@ -192,7 +304,7 @@ def train_deberta(
 
         # Evaluate on dev set
         dev_results = evaluate_model_deberta(model, dev_dataset, dev_loader, device)
-        print(f"Epoch {epoch+1} - Train Loss: {total_loss/num_batches:.4f}")
+        print(f"Epoch {epoch+1} - Train Loss: {total_loss/num_batches:.4f} | Dev Loss: {dev_results.get('dev_loss', float('nan')):.4f}")
 
         results_log.append({
             "epoch": epoch + 1,
@@ -200,17 +312,50 @@ def train_deberta(
             **dev_results,
         })
 
+        checkpoint_manager.maybe_save_state_dict(
+            model.state_dict(),
+            score=dev_results["relaxed_f1"],
+            epoch=epoch + 1,
+            metrics=results_log[-1],
+        )
+
         if dev_results["relaxed_f1"] > best_dev_f1:
             best_dev_f1 = dev_results["relaxed_f1"]
             save_path = os.path.join(OUTPUT_DIR, f"{experiment_name}_best.pt")
             torch.save(model.state_dict(), save_path)
             print(f"  -> New best dev Relaxed F1: {best_dev_f1:.4f} (saved)")
 
+        best_dev_strict_f1 = _maybe_save_strict_best_state_dict(
+            model.state_dict(),
+            dev_results,
+            experiment_name,
+            best_dev_strict_f1,
+        )
+
+        if _update_early_stopping(early_stopping, dev_results.get("dev_loss", float("nan"))):
+            print(
+                "  -> Early stopping triggered "
+                f"(no validation-loss decrease > {early_stopping['min_delta']:.6f} for "
+                f"{early_stopping['patience']} epoch(s))"
+            )
+            break
+        if early_stopping is not None and early_stopping["epochs_without_improvement"] > 0:
+            print(
+                "  -> Early stopping counter: "
+                f"{early_stopping['epochs_without_improvement']}/{early_stopping['patience']}"
+            )
+
     # Save results log
     with open(os.path.join(OUTPUT_DIR, f"{experiment_name}_log.json"), "w") as f:
         json.dump(results_log, f, indent=2)
 
     print(f"\nBest dev Relaxed F1: {best_dev_f1:.4f}")
+    print(f"Best dev Strict F1:  {best_dev_strict_f1:.4f}")
+    batch = outputs = pbar = dev_results = entity_presence = loss = None
+    optimizer.zero_grad(set_to_none=True)
+    del model, optimizer, scheduler, train_loader, dev_loader
+    del train_dataset, dev_dataset, tokenizer, train_df, dev_df, loss_fn
+    _clear_torch_memory()
     return best_dev_f1, results_log
 
 
@@ -219,6 +364,8 @@ def evaluate_model_deberta(model, dataset, dataloader, device):
     model.eval()
     all_gold = []
     all_pred = []
+    total_loss = 0.0
+    num_batches = 0
 
     with torch.no_grad():
         for batch in dataloader:
@@ -226,10 +373,13 @@ def evaluate_model_deberta(model, dataset, dataloader, device):
             outputs = model(
                 input_ids=batch_device["input_ids"],
                 attention_mask=batch_device["attention_mask"],
+                labels=batch_device["labels"],
             )
+            if outputs["loss"] is not None:
+                total_loss += outputs["loss"].item()
+                num_batches += 1
             logits = outputs["logits"]
             preds = logits.argmax(dim=-1).cpu().numpy()
-            labels = batch["labels"].numpy()
 
             for i in range(preds.shape[0]):
                 sample_idx = len(all_gold)
@@ -249,7 +399,9 @@ def evaluate_model_deberta(model, dataset, dataloader, device):
                 all_gold.append(raw_tags)
                 all_pred.append(pred_tags)
 
-    return evaluate_ner(all_gold, all_pred, print_report=True)
+    metrics = evaluate_ner(all_gold, all_pred, print_report=True)
+    metrics["dev_loss"] = total_loss / num_batches if num_batches > 0 else float("nan")
+    return metrics
 
 
 def train_bilstm_crf(
@@ -259,10 +411,15 @@ def train_bilstm_crf(
     lr=1e-3,
     device="cuda:0",
     experiment_name="bilstm_crf",
+    top_k_checkpoints=5,
+    early_stopping_patience=5,
+    early_stopping_min_delta=0.0,
 ):
     """Train BiLSTM-CRF baseline."""
     print(f"\n{'='*60}")
     print(f"  Experiment: {experiment_name} (BiLSTM-CRF)")
+    early_stopping = _init_early_stopping(early_stopping_patience, early_stopping_min_delta)
+    print(f"  Early stopping: {_early_stopping_status(early_stopping)}")
     print(f"{'='*60}\n")
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -292,8 +449,19 @@ def train_bilstm_crf(
         pretrained_embeddings=pretrained_emb,
     ).to(device)
 
+    checkpoint_manager = _make_checkpoint_manager(
+        experiment_name=experiment_name,
+        model_type="bilstm_crf",
+        top_k_checkpoints=top_k_checkpoints,
+        glove_path=glove_path,
+        vocab_size=len(word2idx),
+        early_stopping_patience=early_stopping_patience,
+        early_stopping_min_delta=early_stopping_min_delta,
+    )
+
     optimizer = AdamW(model.parameters(), lr=lr)
     best_dev_f1 = 0.0
+    best_dev_strict_f1 = 0.0
     results_log = []
 
     for epoch in range(epochs):
@@ -317,7 +485,7 @@ def train_bilstm_crf(
 
         # Evaluate
         dev_results = evaluate_bilstm(model, dev_dataset, dev_loader, device)
-        print(f"Epoch {epoch+1} - Train Loss: {total_loss/num_batches:.4f}")
+        print(f"Epoch {epoch+1} - Train Loss: {total_loss/num_batches:.4f} | Dev Loss: {dev_results.get('dev_loss', float('nan')):.4f}")
 
         results_log.append({
             "epoch": epoch + 1,
@@ -325,14 +493,48 @@ def train_bilstm_crf(
             **dev_results,
         })
 
+        checkpoint_manager.maybe_save_state_dict(
+            model.state_dict(),
+            score=dev_results["relaxed_f1"],
+            epoch=epoch + 1,
+            metrics=results_log[-1],
+        )
+
         if dev_results["relaxed_f1"] > best_dev_f1:
             best_dev_f1 = dev_results["relaxed_f1"]
             torch.save(model.state_dict(), os.path.join(OUTPUT_DIR, f"{experiment_name}_best.pt"))
             print(f"  -> New best dev Relaxed F1: {best_dev_f1:.4f}")
 
+        best_dev_strict_f1 = _maybe_save_strict_best_state_dict(
+            model.state_dict(),
+            dev_results,
+            experiment_name,
+            best_dev_strict_f1,
+        )
+
+        if _update_early_stopping(early_stopping, dev_results.get("dev_loss", float("nan"))):
+            print(
+                "  -> Early stopping triggered "
+                f"(no validation-loss decrease > {early_stopping['min_delta']:.6f} for "
+                f"{early_stopping['patience']} epoch(s))"
+            )
+            break
+        if early_stopping is not None and early_stopping["epochs_without_improvement"] > 0:
+            print(
+                "  -> Early stopping counter: "
+                f"{early_stopping['epochs_without_improvement']}/{early_stopping['patience']}"
+            )
+
     with open(os.path.join(OUTPUT_DIR, f"{experiment_name}_log.json"), "w") as f:
         json.dump(results_log, f, indent=2)
 
+    print(f"\nBest dev Relaxed F1: {best_dev_f1:.4f}")
+    print(f"Best dev Strict F1:  {best_dev_strict_f1:.4f}")
+    batch = outputs = pbar = dev_results = loss = None
+    optimizer.zero_grad(set_to_none=True)
+    del model, optimizer, train_loader, dev_loader
+    del train_dataset, dev_dataset, train_df, dev_df, word2idx, pretrained_emb
+    _clear_torch_memory()
     return best_dev_f1, results_log
 
 
@@ -341,13 +543,17 @@ def evaluate_bilstm(model, dataset, dataloader, device):
     model.eval()
     all_gold = []
     all_pred = []
+    total_loss = 0.0
+    num_batches = 0
 
     sample_idx = 0
     with torch.no_grad():
         for batch in dataloader:
             batch_device = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
-            outputs = model(batch_device["input_ids"])
-            pred_ids = outputs["predictions"].cpu().numpy()
+            loss_outputs = model(batch_device["input_ids"], labels=batch_device["labels"], length=batch_device["length"])
+            total_loss += loss_outputs["loss"].item()
+            num_batches += 1
+            pred_ids = model(batch_device["input_ids"])["predictions"].cpu().numpy()
 
             for i in range(pred_ids.shape[0]):
                 if sample_idx >= len(dataset.samples):
@@ -365,7 +571,9 @@ def evaluate_bilstm(model, dataset, dataloader, device):
                 all_pred.append(pred_tags[:len(raw_tags)])
                 sample_idx += 1
 
-    return evaluate_ner(all_gold, all_pred, print_report=True)
+    metrics = evaluate_ner(all_gold, all_pred, print_report=True)
+    metrics["dev_loss"] = total_loss / num_batches if num_batches > 0 else float("nan")
+    return metrics
 
 
 def train_deberta_crf(
@@ -380,6 +588,9 @@ def train_deberta_crf(
     gradient_accumulation_steps=1,
     device="cuda:0",
     experiment_name="deberta_crf",
+    top_k_checkpoints=5,
+    early_stopping_patience=5,
+    early_stopping_min_delta=0.0,
 ):
     """Train DeBERTa + CRF model."""
     print(f"\n{'='*60}")
@@ -387,6 +598,8 @@ def train_deberta_crf(
     print(f"  CRF Model | Multi-task: {use_multitask} | LSTM: {use_lstm}")
     print(f"  LR: {lr} | Encoder LR: {encoder_lr} | Epochs: {epochs}")
     print(f"  Batch size: {batch_size} | Grad accum: {gradient_accumulation_steps}")
+    early_stopping = _init_early_stopping(early_stopping_patience, early_stopping_min_delta)
+    print(f"  Early stopping: {_early_stopping_status(early_stopping)}")
     print(f"{'='*60}\n")
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -407,6 +620,17 @@ def train_deberta_crf(
         model = DeBERTaCRF(model_name=model_name, num_labels=NUM_LABELS, use_lstm=use_lstm)
     model = model.to(device)
 
+    checkpoint_manager = _make_checkpoint_manager(
+        experiment_name=experiment_name,
+        model_type="deberta_crf_multitask" if use_multitask else "deberta_crf",
+        model_name=model_name,
+        top_k_checkpoints=top_k_checkpoints,
+        use_multitask=use_multitask,
+        use_lstm=use_lstm,
+        early_stopping_patience=early_stopping_patience,
+        early_stopping_min_delta=early_stopping_min_delta,
+    )
+
     # Differential learning rates: lower LR for encoder, higher for CRF/classifier
     if encoder_lr is not None:
         encoder_params = list(model.encoder.parameters())
@@ -424,6 +648,7 @@ def train_deberta_crf(
     )
 
     best_dev_f1 = 0.0
+    best_dev_strict_f1 = 0.0
     results_log = []
 
     for epoch in range(epochs):
@@ -465,7 +690,7 @@ def train_deberta_crf(
             pbar.set_postfix(loss=f"{total_loss/num_batches:.4f}")
 
         dev_results = evaluate_model_crf(model, dev_dataset, dev_loader, device)
-        print(f"Epoch {epoch+1} - Train Loss: {total_loss/num_batches:.4f}")
+        print(f"Epoch {epoch+1} - Train Loss: {total_loss/num_batches:.4f} | Dev Loss: {dev_results.get('dev_loss', float('nan')):.4f}")
 
         results_log.append({
             "epoch": epoch + 1,
@@ -473,16 +698,49 @@ def train_deberta_crf(
             **dev_results,
         })
 
+        checkpoint_manager.maybe_save_state_dict(
+            model.state_dict(),
+            score=dev_results["relaxed_f1"],
+            epoch=epoch + 1,
+            metrics=results_log[-1],
+        )
+
         if dev_results["relaxed_f1"] > best_dev_f1:
             best_dev_f1 = dev_results["relaxed_f1"]
             save_path = os.path.join(OUTPUT_DIR, f"{experiment_name}_best.pt")
             torch.save(model.state_dict(), save_path)
             print(f"  -> New best dev Relaxed F1: {best_dev_f1:.4f} (saved)")
 
+        best_dev_strict_f1 = _maybe_save_strict_best_state_dict(
+            model.state_dict(),
+            dev_results,
+            experiment_name,
+            best_dev_strict_f1,
+        )
+
+        if _update_early_stopping(early_stopping, dev_results.get("dev_loss", float("nan"))):
+            print(
+                "  -> Early stopping triggered "
+                f"(no validation-loss decrease > {early_stopping['min_delta']:.6f} for "
+                f"{early_stopping['patience']} epoch(s))"
+            )
+            break
+        if early_stopping is not None and early_stopping["epochs_without_improvement"] > 0:
+            print(
+                "  -> Early stopping counter: "
+                f"{early_stopping['epochs_without_improvement']}/{early_stopping['patience']}"
+            )
+
     with open(os.path.join(OUTPUT_DIR, f"{experiment_name}_log.json"), "w") as f:
         json.dump(results_log, f, indent=2)
 
     print(f"\nBest dev Relaxed F1: {best_dev_f1:.4f}")
+    print(f"Best dev Strict F1:  {best_dev_strict_f1:.4f}")
+    batch = outputs = pbar = dev_results = entity_presence = loss = None
+    optimizer.zero_grad(set_to_none=True)
+    del model, optimizer, scheduler, train_loader, dev_loader
+    del train_dataset, dev_dataset, tokenizer, train_df, dev_df
+    _clear_torch_memory()
     return best_dev_f1, results_log
 
 
@@ -491,11 +749,24 @@ def evaluate_model_crf(model, dataset, dataloader, device):
     model.eval()
     all_gold = []
     all_pred = []
+    total_loss = 0.0
+    num_batches = 0
 
     sample_idx = 0
     with torch.no_grad():
         for batch in dataloader:
             batch_device = {k: v.to(device) for k, v in batch.items()}
+
+            # Compute loss with labels
+            loss_outputs = model(
+                input_ids=batch_device["input_ids"],
+                attention_mask=batch_device["attention_mask"],
+                labels=batch_device["labels"],
+            )
+            total_loss += loss_outputs["loss"].item()
+            num_batches += 1
+
+            # Get Viterbi predictions without labels
             outputs = model(
                 input_ids=batch_device["input_ids"],
                 attention_mask=batch_device["attention_mask"],
@@ -524,7 +795,9 @@ def evaluate_model_crf(model, dataset, dataloader, device):
                 all_pred.append(pred_tags)
                 sample_idx += 1
 
-    return evaluate_ner(all_gold, all_pred, print_report=True)
+    metrics = evaluate_ner(all_gold, all_pred, print_report=True)
+    metrics["dev_loss"] = total_loss / num_batches if num_batches > 0 else float("nan")
+    return metrics
 
 
 def train_deberta_recall_boost(
@@ -538,6 +811,9 @@ def train_deberta_recall_boost(
     experiment_name="deberta_recall_boost",
     use_multitask=True,
     seed=42,
+    top_k_checkpoints=5,
+    early_stopping_patience=5,
+    early_stopping_min_delta=0.0,
 ):
     """Train DeBERTa with aggressive O-class downweighting to boost recall."""
     torch.manual_seed(seed)
@@ -550,6 +826,8 @@ def train_deberta_recall_boost(
     print(f"  O-weight: {o_weight} | LR: {lr} | Epochs: {epochs}")
     print(f"  Batch: {batch_size} x {gradient_accumulation_steps} = {batch_size * gradient_accumulation_steps}")
     print(f"  Seed: {seed}")
+    early_stopping = _init_early_stopping(early_stopping_patience, early_stopping_min_delta)
+    print(f"  Early stopping: {_early_stopping_status(early_stopping)}")
     print(f"{'='*60}\n")
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -576,11 +854,24 @@ def train_deberta_recall_boost(
         model = DeBERTaNER(model_name=model_name, num_labels=NUM_LABELS)
     model = model.to(device)
 
+    checkpoint_manager = _make_checkpoint_manager(
+        experiment_name=experiment_name,
+        model_type="deberta_multitask" if use_multitask else "deberta",
+        model_name=model_name,
+        top_k_checkpoints=top_k_checkpoints,
+        o_weight=o_weight,
+        seed=seed,
+        use_multitask=use_multitask,
+        early_stopping_patience=early_stopping_patience,
+        early_stopping_min_delta=early_stopping_min_delta,
+    )
+
     optimizer = AdamW(model.parameters(), lr=lr, weight_decay=0.01)
     total_steps = (len(train_loader) // gradient_accumulation_steps) * epochs
     scheduler = get_linear_schedule_with_warmup(optimizer, int(0.1 * total_steps), total_steps)
 
     best_dev_f1 = 0.0
+    best_dev_strict_f1 = 0.0
     results_log = []
 
     for epoch in range(epochs):
@@ -634,7 +925,7 @@ def train_deberta_recall_boost(
             pbar.set_postfix(loss=f"{total_loss/num_batches:.4f}")
 
         dev_results = evaluate_model_deberta(model, dev_dataset, dev_loader, device)
-        print(f"Epoch {epoch+1} - Train Loss: {total_loss/num_batches:.4f}")
+        print(f"Epoch {epoch+1} - Train Loss: {total_loss/num_batches:.4f} | Dev Loss: {dev_results.get('dev_loss', float('nan')):.4f}")
 
         results_log.append({
             "epoch": epoch + 1,
@@ -642,16 +933,49 @@ def train_deberta_recall_boost(
             **dev_results,
         })
 
+        checkpoint_manager.maybe_save_state_dict(
+            model.state_dict(),
+            score=dev_results["relaxed_f1"],
+            epoch=epoch + 1,
+            metrics=results_log[-1],
+        )
+
         if dev_results["relaxed_f1"] > best_dev_f1:
             best_dev_f1 = dev_results["relaxed_f1"]
             save_path = os.path.join(OUTPUT_DIR, f"{experiment_name}_best.pt")
             torch.save(model.state_dict(), save_path)
             print(f"  -> New best dev Relaxed F1: {best_dev_f1:.4f} (saved)")
 
+        best_dev_strict_f1 = _maybe_save_strict_best_state_dict(
+            model.state_dict(),
+            dev_results,
+            experiment_name,
+            best_dev_strict_f1,
+        )
+
+        if _update_early_stopping(early_stopping, dev_results.get("dev_loss", float("nan"))):
+            print(
+                "  -> Early stopping triggered "
+                f"(no validation-loss decrease > {early_stopping['min_delta']:.6f} for "
+                f"{early_stopping['patience']} epoch(s))"
+            )
+            break
+        if early_stopping is not None and early_stopping["epochs_without_improvement"] > 0:
+            print(
+                "  -> Early stopping counter: "
+                f"{early_stopping['epochs_without_improvement']}/{early_stopping['patience']}"
+            )
+
     with open(os.path.join(OUTPUT_DIR, f"{experiment_name}_log.json"), "w") as f:
         json.dump(results_log, f, indent=2)
 
     print(f"\nBest dev Relaxed F1: {best_dev_f1:.4f}")
+    print(f"Best dev Strict F1:  {best_dev_strict_f1:.4f}")
+    batch = dev_results = entity_presence = encoder_out = sequence_output = logits = loss = pbar = None
+    optimizer.zero_grad(set_to_none=True)
+    del model, optimizer, scheduler, train_loader, dev_loader
+    del train_dataset, dev_dataset, tokenizer, train_df, dev_df, class_weights
+    _clear_torch_memory()
     return best_dev_f1, results_log
 
 
@@ -666,6 +990,9 @@ def train_deberta_rdrop(
     device="cuda:0",
     experiment_name="deberta_rdrop",
     seed=42,
+    top_k_checkpoints=5,
+    early_stopping_patience=5,
+    early_stopping_min_delta=0.0,
 ):
     """Train DeBERTa with R-Drop consistency regularization + class reweighting."""
     torch.manual_seed(seed)
@@ -677,6 +1004,8 @@ def train_deberta_rdrop(
     print(f"  Experiment: {experiment_name}")
     print(f"  R-Drop alpha: {rdrop_alpha} | O-weight: {o_weight}")
     print(f"  LR: {lr} | Epochs: {epochs} | Seed: {seed}")
+    early_stopping = _init_early_stopping(early_stopping_patience, early_stopping_min_delta)
+    print(f"  Early stopping: {_early_stopping_status(early_stopping)}")
     print(f"{'='*60}\n")
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -698,11 +1027,24 @@ def train_deberta_rdrop(
     model = DeBERTaNERMultiTask(model_name=model_name, num_labels=NUM_LABELS)
     model = model.to(device)
 
+    checkpoint_manager = _make_checkpoint_manager(
+        experiment_name=experiment_name,
+        model_type="deberta_multitask",
+        model_name=model_name,
+        top_k_checkpoints=top_k_checkpoints,
+        o_weight=o_weight,
+        rdrop_alpha=rdrop_alpha,
+        seed=seed,
+        early_stopping_patience=early_stopping_patience,
+        early_stopping_min_delta=early_stopping_min_delta,
+    )
+
     optimizer = AdamW(model.parameters(), lr=lr, weight_decay=0.01)
     total_steps = (len(train_loader) // gradient_accumulation_steps) * epochs
     scheduler = get_linear_schedule_with_warmup(optimizer, int(0.1 * total_steps), total_steps)
 
     best_dev_f1 = 0.0
+    best_dev_strict_f1 = 0.0
     results_log = []
 
     for epoch in range(epochs):
@@ -771,7 +1113,7 @@ def train_deberta_rdrop(
             pbar.set_postfix(loss=f"{total_loss/num_batches:.4f}")
 
         dev_results = evaluate_model_deberta(model, dev_dataset, dev_loader, device)
-        print(f"Epoch {epoch+1} - Train Loss: {total_loss/num_batches:.4f}")
+        print(f"Epoch {epoch+1} - Train Loss: {total_loss/num_batches:.4f} | Dev Loss: {dev_results.get('dev_loss', float('nan')):.4f}")
 
         results_log.append({
             "epoch": epoch + 1,
@@ -779,16 +1121,50 @@ def train_deberta_rdrop(
             **dev_results,
         })
 
+        checkpoint_manager.maybe_save_state_dict(
+            model.state_dict(),
+            score=dev_results["relaxed_f1"],
+            epoch=epoch + 1,
+            metrics=results_log[-1],
+        )
+
         if dev_results["relaxed_f1"] > best_dev_f1:
             best_dev_f1 = dev_results["relaxed_f1"]
             save_path = os.path.join(OUTPUT_DIR, f"{experiment_name}_best.pt")
             torch.save(model.state_dict(), save_path)
             print(f"  -> New best dev Relaxed F1: {best_dev_f1:.4f} (saved)")
 
+        best_dev_strict_f1 = _maybe_save_strict_best_state_dict(
+            model.state_dict(),
+            dev_results,
+            experiment_name,
+            best_dev_strict_f1,
+        )
+
+        if _update_early_stopping(early_stopping, dev_results.get("dev_loss", float("nan"))):
+            print(
+                "  -> Early stopping triggered "
+                f"(no validation-loss decrease > {early_stopping['min_delta']:.6f} for "
+                f"{early_stopping['patience']} epoch(s))"
+            )
+            break
+        if early_stopping is not None and early_stopping["epochs_without_improvement"] > 0:
+            print(
+                "  -> Early stopping counter: "
+                f"{early_stopping['epochs_without_improvement']}/{early_stopping['patience']}"
+            )
+
     with open(os.path.join(OUTPUT_DIR, f"{experiment_name}_log.json"), "w") as f:
         json.dump(results_log, f, indent=2)
 
     print(f"\nBest dev Relaxed F1: {best_dev_f1:.4f}")
+    print(f"Best dev Strict F1:  {best_dev_strict_f1:.4f}")
+    batch = dev_results = entity_presence = encoder_out1 = encoder_out2 = None
+    seq1 = seq2 = logits1 = logits2 = ce1 = ce2 = kl_loss = aux_loss = loss = pbar = None
+    optimizer.zero_grad(set_to_none=True)
+    del model, optimizer, scheduler, train_loader, dev_loader
+    del train_dataset, dev_dataset, tokenizer, train_df, dev_df, class_weights
+    _clear_torch_memory()
     return best_dev_f1, results_log
 
 
@@ -804,6 +1180,9 @@ def train_deberta_fgm_swa(
     device="cuda:0",
     experiment_name="deberta_fgm_swa",
     seed=42,
+    top_k_checkpoints=5,
+    early_stopping_patience=5,
+    early_stopping_min_delta=0.0,
 ):
     """Train with FGM adversarial perturbation + SWA weight averaging."""
     torch.manual_seed(seed)
@@ -815,6 +1194,8 @@ def train_deberta_fgm_swa(
     print(f"  Experiment: {experiment_name}")
     print(f"  FGM epsilon: {fgm_epsilon} | SWA start: {swa_start_epoch}")
     print(f"  O-weight: {o_weight} | LR: {lr} | Epochs: {epochs} | Seed: {seed}")
+    early_stopping = _init_early_stopping(early_stopping_patience, early_stopping_min_delta)
+    print(f"  Early stopping: {_early_stopping_status(early_stopping)}")
     print(f"{'='*60}\n")
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -836,6 +1217,19 @@ def train_deberta_fgm_swa(
     model = DeBERTaNERMultiTask(model_name=model_name, num_labels=NUM_LABELS)
     model = model.to(device)
 
+    checkpoint_manager = _make_checkpoint_manager(
+        experiment_name=experiment_name,
+        model_type="deberta_multitask",
+        model_name=model_name,
+        top_k_checkpoints=top_k_checkpoints,
+        o_weight=o_weight,
+        fgm_epsilon=fgm_epsilon,
+        swa_start_epoch=swa_start_epoch,
+        seed=seed,
+        early_stopping_patience=early_stopping_patience,
+        early_stopping_min_delta=early_stopping_min_delta,
+    )
+
     optimizer = AdamW(model.parameters(), lr=lr, weight_decay=0.01)
     total_steps = (len(train_loader) // gradient_accumulation_steps) * epochs
     scheduler = get_linear_schedule_with_warmup(optimizer, int(0.1 * total_steps), total_steps)
@@ -845,6 +1239,7 @@ def train_deberta_fgm_swa(
     swa_count = 0
 
     best_dev_f1 = 0.0
+    best_dev_strict_f1 = 0.0
     results_log = []
 
     for epoch in range(epochs):
@@ -931,7 +1326,7 @@ def train_deberta_fgm_swa(
                 swa_count += 1
 
         dev_results = evaluate_model_deberta(model, dev_dataset, dev_loader, device)
-        print(f"Epoch {epoch+1} - Train Loss: {total_loss/num_batches:.4f}")
+        print(f"Epoch {epoch+1} - Train Loss: {total_loss/num_batches:.4f} | Dev Loss: {dev_results.get('dev_loss', float('nan')):.4f}")
 
         results_log.append({
             "epoch": epoch + 1,
@@ -939,11 +1334,38 @@ def train_deberta_fgm_swa(
             **dev_results,
         })
 
+        checkpoint_manager.maybe_save_state_dict(
+            model.state_dict(),
+            score=dev_results["relaxed_f1"],
+            epoch=epoch + 1,
+            metrics=results_log[-1],
+        )
+
         if dev_results["relaxed_f1"] > best_dev_f1:
             best_dev_f1 = dev_results["relaxed_f1"]
             save_path = os.path.join(OUTPUT_DIR, f"{experiment_name}_best.pt")
             torch.save(model.state_dict(), save_path)
             print(f"  -> New best dev Relaxed F1: {best_dev_f1:.4f} (saved)")
+
+        best_dev_strict_f1 = _maybe_save_strict_best_state_dict(
+            model.state_dict(),
+            dev_results,
+            experiment_name,
+            best_dev_strict_f1,
+        )
+
+        if _update_early_stopping(early_stopping, dev_results.get("dev_loss", float("nan"))):
+            print(
+                "  -> Early stopping triggered "
+                f"(no validation-loss decrease > {early_stopping['min_delta']:.6f} for "
+                f"{early_stopping['patience']} epoch(s))"
+            )
+            break
+        if early_stopping is not None and early_stopping["epochs_without_improvement"] > 0:
+            print(
+                "  -> Early stopping counter: "
+                f"{early_stopping['epochs_without_improvement']}/{early_stopping['patience']}"
+            )
 
     # Evaluate SWA model
     if swa_state_dict is not None and swa_count > 0:
@@ -954,6 +1376,17 @@ def train_deberta_fgm_swa(
         swa_f1 = swa_results["relaxed_f1"]
         print(f"SWA Relaxed F1: {swa_f1:.4f}")
 
+        checkpoint_manager.maybe_save_state_dict(
+            model.state_dict(),
+            score=swa_f1,
+            epoch=epochs + 1,
+            metrics={
+                "epoch": epochs + 1,
+                "checkpoint_kind": "swa",
+                **swa_results,
+            },
+        )
+
         if swa_f1 > best_dev_f1:
             best_dev_f1 = swa_f1
             save_path = os.path.join(OUTPUT_DIR, f"{experiment_name}_swa_best.pt")
@@ -963,10 +1396,25 @@ def train_deberta_fgm_swa(
             save_path = os.path.join(OUTPUT_DIR, f"{experiment_name}_swa.pt")
             torch.save(model.state_dict(), save_path)
 
+        best_dev_strict_f1 = _maybe_save_strict_best_state_dict(
+            model.state_dict(),
+            swa_results,
+            experiment_name,
+            best_dev_strict_f1,
+        )
+
     with open(os.path.join(OUTPUT_DIR, f"{experiment_name}_log.json"), "w") as f:
         json.dump(results_log, f, indent=2)
 
     print(f"\nBest dev Relaxed F1: {best_dev_f1:.4f}")
+    print(f"Best dev Strict F1:  {best_dev_strict_f1:.4f}")
+    batch = dev_results = entity_presence = encoder_out = encoder_out_adv = None
+    seq = seq_adv = logits = logits_adv = loss = loss_adv = loss_scaled = loss_adv_scaled = None
+    pbar = saved_perturbations = None
+    optimizer.zero_grad(set_to_none=True)
+    del model, optimizer, scheduler, train_loader, dev_loader
+    del train_dataset, dev_dataset, tokenizer, train_df, dev_df, class_weights, swa_state_dict
+    _clear_torch_memory()
     return best_dev_f1, results_log
 
 

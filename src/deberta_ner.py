@@ -47,7 +47,7 @@ class DeBERTaNER(nn.Module):
     ):
         super().__init__()
         self.config = AutoConfig.from_pretrained(model_name)
-        self.encoder = AutoModel.from_pretrained(model_name, torch_dtype=torch.float32)
+        self.encoder = AutoModel.from_pretrained(model_name, dtype=torch.float32)
         self.dropout = nn.Dropout(dropout)
         self.classifier = nn.Linear(self.config.hidden_size, num_labels)
         self.num_labels = num_labels
@@ -92,7 +92,7 @@ class DeBERTaNERMultiTask(nn.Module):
     ):
         super().__init__()
         self.config = AutoConfig.from_pretrained(model_name)
-        self.encoder = AutoModel.from_pretrained(model_name, torch_dtype=torch.float32)
+        self.encoder = AutoModel.from_pretrained(model_name, dtype=torch.float32)
         self.dropout = nn.Dropout(dropout)
         self.num_labels = num_labels
         self.aux_weight = aux_weight
@@ -169,7 +169,7 @@ class SpanNER(nn.Module):
     ):
         super().__init__()
         self.config = AutoConfig.from_pretrained(model_name)
-        self.encoder = AutoModel.from_pretrained(model_name, torch_dtype=torch.float32)
+        self.encoder = AutoModel.from_pretrained(model_name, dtype=torch.float32)
         self.dropout = nn.Dropout(dropout)
         self.max_span_length = max_span_length
         self.num_labels = num_labels
