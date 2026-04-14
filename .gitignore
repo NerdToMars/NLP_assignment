@@ -25,3 +25,4 @@ glove.6B.300d.txt
 .DS_Store
 Thumbs.db
 outputs*/
+.deps/

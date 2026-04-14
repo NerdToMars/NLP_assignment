@@ -6,6 +6,7 @@ requires-python = ">=3.11"
 dependencies = [
     "accelerate>=1.13.0",
     "datasets>=4.8.4",
+    "emoji>=2.15.0",
     "gliner>=0.2.24",
     "ipykernel>=7.2.0",
     "jupyter>=1.1.1",
@@ -30,4 +31,4 @@ torchaudio = { index = "pytorch" }
 
 [[tool.uv.index]]
 name = "pytorch"
-url = "https://download.pytorch.org/whl/cu124"
+url = "https://download.pytorch.org/whl/cu128"

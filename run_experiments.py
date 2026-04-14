@@ -51,6 +51,39 @@ class ExperimentPreset:
     supports_lr: bool = False
 
 
+@dataclass(frozen=True)
+class BackbonePreset:
+    """A verified encoder backbone that can replace the default transformer encoder."""
+
+    model_name: str
+    description: str
+    gated: bool = False
+
+
+REDDIT_BACKBONES: "OrderedDict[str, BackbonePreset]" = OrderedDict(
+    {
+        "socbert": BackbonePreset(
+            model_name="sarkerlab/SocBERT-base",
+            description="RoBERTa-base continued pretraining on social media text including Reddit comments.",
+        ),
+        "stress_roberta": BackbonePreset(
+            model_name="Amalq/stress-roberta-base",
+            description="RoBERTa-base continued pretraining on Stress-SMHD Reddit posts.",
+        ),
+        "mental_bert": BackbonePreset(
+            model_name="mental/mental-bert-base-uncased",
+            description="MentalBERT trained on mental-health-related Reddit posts.",
+            gated=True,
+        ),
+        "mental_roberta": BackbonePreset(
+            model_name="mental/mental-roberta-base",
+            description="MentalRoBERTa trained on mental-health-related Reddit posts.",
+            gated=True,
+        ),
+    }
+)
+
+
 def _json_ready(value: Any) -> Any:
     if isinstance(value, Path):
         return str(value)
@@ -79,6 +112,20 @@ def _resolve_runner(runner: Callable[..., Any] | str) -> Callable[..., Any]:
     module_name, attr_name = runner.split(":", maxsplit=1)
     module = importlib.import_module(module_name)
     return getattr(module, attr_name)
+
+
+def _resolve_backbone_model_name(
+    explicit_model_name: str | None,
+    backbone_key: str | None,
+) -> tuple[str | None, str | None]:
+    if explicit_model_name is not None and backbone_key is not None:
+        raise SystemExit("Use either --model-name or --backbone, not both.")
+
+    if backbone_key is None:
+        return explicit_model_name, None
+
+    backbone = REDDIT_BACKBONES[backbone_key]
+    return backbone.model_name, backbone_key
 
 
 def _pin_single_cuda_device(run_configs: list[dict[str, Any]]) -> str | None:
@@ -116,11 +163,17 @@ def _set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
-def _apply_runtime_paths(data_dir: str | os.PathLike[str], output_dir: str | os.PathLike[str]) -> None:
+def _apply_runtime_paths(
+    data_dir: str | os.PathLike[str],
+    output_dir: str | os.PathLike[str],
+    enable_preprocessing: bool = False,
+) -> None:
     from src import train as train_module
+    from src import data as data_module
 
     train_module.DATA_DIR = str(Path(data_dir).resolve())
     train_module.OUTPUT_DIR = str(Path(output_dir).resolve())
+    data_module.set_runtime_preprocessing(enable_preprocessing)
 
 
 def _resolve_checkpoint_paths(
@@ -452,6 +505,44 @@ def build_presets() -> "OrderedDict[str, ExperimentPreset]":
                 },
                 supports_lr=True,
             ),
+            "two_step_impact_pipeline": ExperimentPreset(
+                runner="src.impact_pipelines:run_two_step_impact_pipeline",
+                description="Two-step pipeline: binary impact span extraction, then Clinical/Social span classification.",
+                defaults={
+                    "epochs": 10,
+                    "batch_size": 16,
+                    "lr": 2e-5,
+                    "device": DEFAULT_DEVICE,
+                    "experiment_name": "two_step_impact_pipeline",
+                },
+                supports_lr=True,
+            ),
+            "sentence_token_hierarchy": ExperimentPreset(
+                runner="src.impact_pipelines:train_sentence_token_hierarchy",
+                description="Joint sentence-level impact detection and token-level BIO tagging in one model.",
+                defaults={
+                    "epochs": 10,
+                    "batch_size": 16,
+                    "lr": 2e-5,
+                    "threshold": 0.5,
+                    "device": DEFAULT_DEVICE,
+                    "experiment_name": "sentence_token_hierarchy",
+                },
+                supports_lr=True,
+            ),
+            "span_nested_gliner": ExperimentPreset(
+                runner="src.impact_pipelines:run_span_nested_gliner",
+                description="GLiNER fine-tuning as the span-based / overlap-aware experiment family.",
+                defaults={
+                    "epochs": 5,
+                    "batch_size": 8,
+                    "lr": 1e-5,
+                    "threshold": 0.4,
+                    "device": DEFAULT_DEVICE,
+                    "experiment_name": "span_nested_gliner",
+                },
+                supports_lr=True,
+            ),
             "model_soup": ExperimentPreset(
                 runner="src.model_soup:run_model_soup",
                 description="Average compatible checkpoints in weight space and evaluate the soup.",
@@ -591,6 +682,25 @@ def _maybe_adjust_seeded_name(
     config["experiment_name"] = str(experiment_name).replace(f"s{default_seed}", f"s{explicit_seed}")
 
 
+def _maybe_adjust_backbone_name(
+    config: dict[str, Any],
+    explicit_experiment_name: str | None,
+    backbone_key: str | None,
+) -> None:
+    if explicit_experiment_name is not None or backbone_key is None:
+        return
+
+    experiment_name = config.get("experiment_name")
+    if experiment_name is None:
+        return
+
+    suffix = f"_{backbone_key}"
+    if str(experiment_name).endswith(suffix):
+        return
+
+    config["experiment_name"] = f"{experiment_name}{suffix}"
+
+
 def list_command(_: argparse.Namespace) -> int:
     """Print available experiments and groups."""
 
@@ -603,6 +713,104 @@ def list_command(_: argparse.Namespace) -> int:
     print(f"  core      {' '.join(CORE_EXPERIMENTS)}")
     print(f"  advanced  {' '.join(ADVANCED_EXPERIMENTS)}")
     print(f"  all       {' '.join(CORE_EXPERIMENTS + ADVANCED_EXPERIMENTS)}")
+    print("\nUse `run_experiments.py list-backbones` to see verified Reddit-domain backbones.")
+    return 0
+
+
+def list_backbones_command(_: argparse.Namespace) -> int:
+    """Print the verified backbone aliases that can replace the default transformer encoder."""
+
+    print("Available Reddit / mental-health backbones:\n")
+    for key, backbone in REDDIT_BACKBONES.items():
+        gated_note = " [gated on Hugging Face]" if backbone.gated else ""
+        print(f"  {key:<16} {backbone.model_name}{gated_note}")
+        print(f"                   {backbone.description}")
+    return 0
+
+
+def predict_command(args: argparse.Namespace) -> int:
+    """Run a saved checkpoint on a plain CSV and write submission-style predictions."""
+
+    from src.predict import predict_bilstm_crf, predict_transformer_ner
+
+    resolved_model_name, _ = _resolve_backbone_model_name(args.model_name, args.backbone)
+    output_csv = args.output_csv
+    if output_csv is None:
+        input_path = Path(args.input_csv).resolve()
+        output_csv = str(input_path.with_name(f"{input_path.stem}_predictions.csv"))
+
+    if args.model_type == "bilstm_crf":
+        predict_bilstm_crf(
+            input_csv=args.input_csv,
+            output_csv=output_csv,
+            checkpoint_path=args.checkpoint,
+            data_dir=args.data_dir,
+            glove_path=args.glove_path or str(DEFAULT_GLOVE_PATH),
+            batch_size=args.batch_size or 32,
+            device=args.device or DEFAULT_DEVICE,
+            enable_preprocessing=args.enable_preprocessing,
+        )
+        return 0
+
+    predict_transformer_ner(
+        input_csv=args.input_csv,
+        output_csv=output_csv,
+        checkpoint_path=args.checkpoint,
+        model_type=args.model_type,
+        model_name=resolved_model_name or "microsoft/deberta-v3-large",
+        batch_size=args.batch_size or 8,
+        device=args.device or DEFAULT_DEVICE,
+        definition_prompting=args.definition_prompting,
+        enable_preprocessing=args.enable_preprocessing,
+    )
+    return 0
+
+
+def predict_ensemble_command(args: argparse.Namespace) -> int:
+    """Run a saved ensemble-search selection on a CSV and write submission-style predictions."""
+
+    from src.predict import predict_ensemble_from_search_results
+
+    output_csv = args.output_csv
+    if output_csv is None:
+        input_path = Path(args.input_csv).resolve()
+        selection_suffix = f"best{int(args.best_size)}" if args.best_size is not None else "best_overall"
+        output_csv = str(input_path.with_name(f"{input_path.stem}_{selection_suffix}_ensemble_predictions.csv"))
+
+    predict_ensemble_from_search_results(
+        input_csv=args.input_csv,
+        output_csv=output_csv,
+        search_results_path=args.search_results,
+        best_size=args.best_size,
+        selection_metric=args.selection_metric,
+        batch_size=args.batch_size or 8,
+        device=args.device or DEFAULT_DEVICE,
+        data_dir=args.data_dir,
+        glove_path=args.glove_path or str(DEFAULT_GLOVE_PATH),
+        enable_preprocessing=args.enable_preprocessing,
+    )
+    return 0
+
+
+def predict_gliner_command(args: argparse.Namespace) -> int:
+    """Run a fine-tuned GLiNER model on a CSV and optionally score it when gold is present."""
+
+    from src.predict import predict_gliner_ner
+
+    output_csv = args.output_csv
+    if output_csv is None:
+        input_path = Path(args.input_csv).resolve()
+        output_csv = str(input_path.with_name(f"{input_path.stem}_gliner_predictions.csv"))
+
+    predict_gliner_ner(
+        input_csv=args.input_csv,
+        output_csv=output_csv,
+        model_dir=args.model_dir,
+        threshold=args.threshold if args.threshold is not None else 0.4,
+        device=args.device or DEFAULT_DEVICE,
+        metrics_output=args.metrics_output,
+        enable_preprocessing=bool(args.enable_preprocessing),
+    )
     return 0
 
 
@@ -611,17 +819,24 @@ def run_command(args: argparse.Namespace) -> int:
 
     presets = build_presets()
     preset = presets[args.experiment]
+    resolved_model_name, resolved_backbone = _resolve_backbone_model_name(args.model_name, args.backbone)
 
     config = dict(preset.defaults)
     config["data_dir"] = str(Path(args.data_dir).resolve())
     config["output_dir"] = str(Path(args.output_dir).resolve())
+    config["enable_preprocessing"] = bool(args.enable_preprocessing)
     lr_values = args.lr or []
     if lr_values and not preset.supports_lr:
         raise SystemExit(f"Experiment '{args.experiment}' does not accept --lr overrides.")
 
     overrides = {
-        "model_name": args.model_name,
+        "model_name": resolved_model_name,
         "glove_path": args.glove_path,
+        "use_focal_loss": args.use_focal_loss,
+        "definition_prompting": args.definition_prompting,
+        "use_multitask": args.use_multitask,
+        "use_synthetic": args.use_synthetic,
+        "use_curriculum": args.use_curriculum,
         "epochs": args.epochs,
         "batch_size": args.batch_size,
         "device": args.device,
@@ -657,6 +872,9 @@ def run_command(args: argparse.Namespace) -> int:
         config["source_experiments"] = args.source_experiment
 
     _maybe_adjust_seeded_name(preset, config, args.experiment_name, args.seed)
+    _maybe_adjust_backbone_name(config, args.experiment_name, resolved_backbone)
+    if resolved_backbone is not None:
+        config["backbone"] = resolved_backbone
     run_configs: list[dict[str, Any]]
     if lr_values:
         run_configs = []
@@ -690,7 +908,11 @@ def run_command(args: argparse.Namespace) -> int:
             print(f"Learning rate: {run_config['lr']}")
         print("-" * 60)
 
-        _apply_runtime_paths(run_config["data_dir"], run_config["output_dir"])
+        _apply_runtime_paths(
+            run_config["data_dir"],
+            run_config["output_dir"],
+            enable_preprocessing=bool(args.enable_preprocessing),
+        )
         if args.seed is not None:
             _set_seed(args.seed)
         elif "seed" in run_config:
@@ -736,12 +958,54 @@ def build_parser() -> argparse.ArgumentParser:
     list_parser = subparsers.add_parser("list", help="Show available experiments and groups.")
     list_parser.set_defaults(handler=list_command)
 
+    list_backbones_parser = subparsers.add_parser(
+        "list-backbones",
+        help="Show verified Reddit / mental-health encoder backbones.",
+    )
+    list_backbones_parser.set_defaults(handler=list_backbones_command)
+
     run_parser = subparsers.add_parser("run", help="Run one experiment preset.")
     run_parser.add_argument("--experiment", required=True, choices=list(build_presets().keys()))
     run_parser.add_argument("--data-dir", default=str(DEFAULT_DATA_DIR))
     run_parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
+    run_parser.add_argument("--backbone", choices=list(REDDIT_BACKBONES.keys()))
     run_parser.add_argument("--model-name")
     run_parser.add_argument("--glove-path")
+    run_parser.add_argument(
+        "--use-focal-loss",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Override the focal-loss toggle for compatible transformer experiments.",
+    )
+    run_parser.add_argument(
+        "--definition-prompting",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Override definition prompting for compatible transformer experiments.",
+    )
+    run_parser.add_argument(
+        "--use-multitask",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Override the multitask auxiliary-head toggle for compatible transformer experiments.",
+    )
+    run_parser.add_argument(
+        "--use-synthetic",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Override synthetic-data augmentation for compatible transformer experiments.",
+    )
+    run_parser.add_argument(
+        "--use-curriculum",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Override curriculum learning for compatible transformer experiments.",
+    )
+    run_parser.add_argument(
+        "--enable-preprocessing",
+        action="store_true",
+        help="Opt in to the runtime token/data preprocessing pipeline. Default is off.",
+    )
     run_parser.add_argument("--epochs", type=int)
     run_parser.add_argument("--batch-size", type=int)
     run_parser.add_argument(
@@ -808,6 +1072,83 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print the resolved configuration without launching training or evaluation.",
     )
     run_parser.set_defaults(handler=run_command)
+
+    predict_parser = subparsers.add_parser(
+        "predict",
+        help="Run a saved checkpoint on a CSV with ID/tokens and write sample-submission output.",
+    )
+    predict_parser.add_argument("--input-csv", required=True)
+    predict_parser.add_argument("--checkpoint", required=True)
+    predict_parser.add_argument("--output-csv")
+    predict_parser.add_argument("--backbone", choices=list(REDDIT_BACKBONES.keys()))
+    predict_parser.add_argument(
+        "--model-type",
+        required=True,
+        choices=("deberta", "deberta_multitask", "deberta_crf", "deberta_crf_multitask", "bilstm_crf"),
+    )
+    predict_parser.add_argument("--model-name")
+    predict_parser.add_argument("--batch-size", type=int)
+    predict_parser.add_argument("--device")
+    predict_parser.add_argument("--data-dir", default=str(DEFAULT_DATA_DIR))
+    predict_parser.add_argument("--glove-path")
+    predict_parser.add_argument(
+        "--enable-preprocessing",
+        action="store_true",
+        help="Opt in to the runtime token/data preprocessing pipeline. Default is off.",
+    )
+    predict_parser.add_argument(
+        "--definition-prompting",
+        action="store_true",
+        help="Use definition-prepended tokenization when predicting with checkpoints trained that way.",
+    )
+    predict_parser.set_defaults(handler=predict_command)
+
+    predict_ensemble_parser = subparsers.add_parser(
+        "predict-ensemble",
+        help="Run a saved best ensemble from an ensemble_search results JSON on a CSV with ID/tokens.",
+    )
+    predict_ensemble_parser.add_argument("--input-csv", required=True)
+    predict_ensemble_parser.add_argument("--search-results", required=True)
+    predict_ensemble_parser.add_argument("--output-csv")
+    predict_ensemble_parser.add_argument(
+        "--best-size",
+        type=int,
+        choices=(2, 3, 4, 5),
+        help="Use the best ensemble of this size from the search results. Default is best_overall.",
+    )
+    predict_ensemble_parser.add_argument(
+        "--selection-metric",
+        choices=("relaxed_f1", "strict_f1"),
+        default="relaxed_f1",
+        help="Select the ensemble by the best saved dev relaxed or strict F1. Default is relaxed_f1.",
+    )
+    predict_ensemble_parser.add_argument("--batch-size", type=int)
+    predict_ensemble_parser.add_argument("--device")
+    predict_ensemble_parser.add_argument("--data-dir", default=str(DEFAULT_DATA_DIR))
+    predict_ensemble_parser.add_argument("--glove-path")
+    predict_ensemble_parser.add_argument(
+        "--enable-preprocessing",
+        action="store_true",
+        help="Opt in to the runtime token/data preprocessing pipeline. Default is off.",
+    )
+    predict_ensemble_parser.set_defaults(handler=predict_ensemble_command)
+
+    predict_gliner_parser = subparsers.add_parser(
+        "predict-gliner",
+        help="Run a fine-tuned GLiNER model directory on a CSV with ID/tokens and optionally score it when ner_tags are present.",
+    )
+    predict_gliner_parser.add_argument("--input-csv", required=True)
+    predict_gliner_parser.add_argument("--model-dir", required=True)
+    predict_gliner_parser.add_argument("--output-csv")
+    predict_gliner_parser.add_argument("--metrics-output")
+    predict_gliner_parser.add_argument("--threshold", type=float)
+    predict_gliner_parser.add_argument("--device")
+    predict_gliner_parser.add_argument(
+        "--enable-preprocessing",
+        action="store_true",
+        help="Opt in to the runtime token/data preprocessing pipeline. Default is off.",
+    )
+    predict_gliner_parser.set_defaults(handler=predict_gliner_command)
 
     return parser
 

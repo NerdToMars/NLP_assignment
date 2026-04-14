@@ -6,10 +6,17 @@ import re
 from dataclasses import dataclass
 from typing import Any, Iterable
 
+try:
+    import emoji
+except ImportError:  # pragma: no cover - optional dependency until env is synced
+    emoji = None
+
 
 METADATA_MARKERS = {"submission_title", "submission_subreddit"}
+FORCED_O_TOKENS = {'""', '"', ":", "-"}
 USER_PREFIXES = ("u/", "/u/")
 URL_PATTERN = re.compile(r"https?://", re.IGNORECASE)
+SPECIAL_CHAR_TOKEN_PATTERN = re.compile(r"^[^\w\s]+$", re.UNICODE)
 MOJIBAKE_REPLACEMENTS = {
     "â€™": "'",
     "â€˜": "'",
@@ -28,6 +35,7 @@ class RuntimePreprocessingConfig:
 
     normalize_encoding_artifacts: bool = True
     remove_metadata_markers: bool = True
+    remove_special_character_tokens: bool = True
     replace_user_mentions: bool = True
     replace_urls: bool = True
 
@@ -41,6 +49,47 @@ def normalize_token_artifacts(token: str) -> str:
     for source, target in MOJIBAKE_REPLACEMENTS.items():
         normalized = normalized.replace(source, target)
     return normalized
+
+
+def is_pure_emoji(token: str) -> bool:
+    """Return True when the token is a standalone emoji character."""
+
+    stripped = str(token).strip()
+    if not stripped or emoji is None:
+        return False
+    return bool(emoji.is_emoji(stripped))
+
+
+def is_special_character_token(token: str) -> bool:
+    """Return True for punctuation/symbol-only tokens such as :, -, or quotes."""
+
+    stripped = str(token).strip()
+    if not stripped:
+        return False
+    return SPECIAL_CHAR_TOKEN_PATTERN.fullmatch(stripped) is not None
+
+
+def should_force_o_token(
+    token: str,
+    config: RuntimePreprocessingConfig = DEFAULT_RUNTIME_PREPROCESSING,
+) -> bool:
+    """Return True when a token should be skipped and later restored as O."""
+
+    normalized = normalize_token_artifacts(str(token)) if config.normalize_encoding_artifacts else str(token)
+
+    if config.remove_metadata_markers and normalized in METADATA_MARKERS:
+        return True
+
+    if not config.remove_special_character_tokens:
+        return False
+
+    if normalized in FORCED_O_TOKENS:
+        return True
+    if is_pure_emoji(normalized):
+        return True
+    if is_special_character_token(normalized):
+        return True
+    return False
 
 
 def preprocess_token(token: str, config: RuntimePreprocessingConfig = DEFAULT_RUNTIME_PREPROCESSING) -> str:
@@ -59,7 +108,44 @@ def preprocess_tokens(
     config: RuntimePreprocessingConfig = DEFAULT_RUNTIME_PREPROCESSING,
 ) -> list[str]:
     """Apply token-only runtime preprocessing."""
-    return [preprocess_token(str(token), config=config) for token in tokens]
+    processed_tokens: list[str] = []
+    for token in tokens:
+        if should_force_o_token(str(token), config=config):
+            continue
+        processed_tokens.append(preprocess_token(str(token), config=config))
+    return processed_tokens
+
+
+def preprocess_tokens_with_alignment(
+    tokens: list[str],
+    config: RuntimePreprocessingConfig = DEFAULT_RUNTIME_PREPROCESSING,
+) -> tuple[list[str], list[str], list[int]]:
+    """Return original tokens, model tokens, and kept indices for O-restoration."""
+
+    original_tokens = [str(token) for token in tokens]
+    model_tokens: list[str] = []
+    kept_indices: list[int] = []
+
+    for index, token in enumerate(original_tokens):
+        if should_force_o_token(token, config=config):
+            continue
+        model_tokens.append(preprocess_token(token, config=config))
+        kept_indices.append(index)
+
+    return original_tokens, model_tokens, kept_indices
+
+
+def restore_forced_o_predictions(
+    original_tokens: list[str],
+    kept_indices: list[int],
+    predicted_tags: list[str],
+) -> list[str]:
+    """Restore skipped positions as O so output lengths match the original tokens."""
+
+    restored = ["O"] * len(original_tokens)
+    for predicted_tag, original_index in zip(predicted_tags, kept_indices):
+        restored[original_index] = str(predicted_tag)
+    return restored
 
 
 def preprocess_labeled_row(
@@ -73,18 +159,18 @@ def preprocess_labeled_row(
     processed_tags: list[str] = []
     processed_labels: list[str] | None = [] if labels is not None else None
 
-    for index, raw_token in enumerate(tokens):
+    for index, (raw_token, raw_tag) in enumerate(zip(tokens, ner_tags)):
         token = str(raw_token)
-        if config.remove_metadata_markers and token in METADATA_MARKERS:
+        if should_force_o_token(token, config=config):
             continue
 
         processed_tokens.append(preprocess_token(token, config=config))
-        processed_tags.append(str(ner_tags[index]))
+        processed_tags.append(str(raw_tag))
         if processed_labels is not None:
             processed_labels.append(str(labels[index]))
 
     if not processed_tokens:
-        fallback_tokens = preprocess_tokens([str(token) for token in tokens], config=config)
+        fallback_tokens = [preprocess_token(str(token), config=config) for token in tokens]
         fallback_tags = [str(tag) for tag in ner_tags]
         fallback_labels = [str(label) for label in labels] if labels is not None else None
         return fallback_tokens, fallback_tags, fallback_labels

@@ -8,6 +8,7 @@ GPU0_DEVICE="cuda:0"
 GPU1_DEVICE="cuda:1"
 OUTPUT_DIR="${SCRIPT_DIR}/outputs"
 DRY_RUN=0
+INCLUDE_EXTRA_PIPELINES=0
 
 MODEL_LR_VALUES=(5e-4 2e-5 5e-5)
 GLINER_LR_VALUES=(5e-6 1e-5 2e-5)
@@ -35,21 +36,33 @@ GPU1_EXPERIMENTS=(
   deberta_combined_no_synth
 )
 
+EXTRA_GPU0_EXPERIMENTS=(
+  two_step_impact_pipeline
+)
+
+EXTRA_GPU1_EXPERIMENTS=(
+  hierarchical_deberta
+  sentence_token_hierarchy
+)
+
 usage() {
   cat <<'EOF'
 Usage:
   ./run_two_gpu_lr_sweep.sh
   ./run_two_gpu_lr_sweep.sh --dry-run
+  ./run_two_gpu_lr_sweep.sh --include-extra-pipelines
   ./run_two_gpu_lr_sweep.sh --output-dir /path/to/outputs
   ./run_two_gpu_lr_sweep.sh --gpu0-device cuda:0 --gpu1-device cuda:1
   ./run_two_gpu_lr_sweep.sh --lr 5e-4 --lr 2e-5 --lr 5e-5
   ./run_two_gpu_lr_sweep.sh --gliner-lr 5e-6 --gliner-lr 1e-5 --gliner-lr 2e-5
+  ./run_two_gpu_lr_sweep.sh --output-dir /path/to/outputs -- --backbone socbert
   ./run_two_gpu_lr_sweep.sh -- --early-stopping-patience 5 --early-stopping-min-delta 0.001
   ./run_two_gpu_lr_sweep.sh -- --epochs 20
 
 Behavior:
   - Launches two sequential experiment queues in parallel, one per GPU.
   - Applies one LR sweep to the main trainable presets and a separate safer LR sweep to GLiNER fine-tuning.
+  - --include-extra-pipelines also adds hierarchical_deberta, sentence_token_hierarchy, and two_step_impact_pipeline.
   - Writes launcher logs to the output directory.
   - Excludes evaluation-only presets such as gliner, gliner_inference, and ensemble because they do not use optimizer learning rates.
 EOF
@@ -100,6 +113,8 @@ main() {
   local gpu0_main_runs=0
   local gpu0_total_runs=0
   local gpu1_total_runs=0
+  local -a gpu0_experiments=("${GPU0_EXPERIMENTS[@]}")
+  local -a gpu1_experiments=("${GPU1_EXPERIMENTS[@]}")
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -109,6 +124,10 @@ main() {
         ;;
       --dry-run)
         DRY_RUN=1
+        shift
+        ;;
+      --include-extra-pipelines)
+        INCLUDE_EXTRA_PIPELINES=1
         shift
         ;;
       --output-dir)
@@ -162,6 +181,11 @@ main() {
     exit 1
   fi
 
+  if [[ ${INCLUDE_EXTRA_PIPELINES} -eq 1 ]]; then
+    gpu0_experiments+=("${EXTRA_GPU0_EXPERIMENTS[@]}")
+    gpu1_experiments+=("${EXTRA_GPU1_EXPERIMENTS[@]}")
+  fi
+
   mkdir -p "${OUTPUT_DIR}"
 
   for lr in "${MODEL_LR_VALUES[@]}"; do
@@ -189,18 +213,18 @@ main() {
   gpu0_log="${OUTPUT_DIR}/gpu0_lr_sweep_${timestamp}.log"
   gpu1_log="${OUTPUT_DIR}/gpu1_lr_sweep_${timestamp}.log"
   plan_log="${OUTPUT_DIR}/two_gpu_lr_sweep_plan_${timestamp}.log"
-  gpu0_main_runs=$((${#GPU0_EXPERIMENTS[@]} * ${#MODEL_LR_VALUES[@]}))
+  gpu0_main_runs=$((${#gpu0_experiments[@]} * ${#MODEL_LR_VALUES[@]}))
   gpu0_total_runs=$((gpu0_main_runs + ${#GLINER_LR_VALUES[@]}))
-  gpu1_total_runs=$((${#GPU1_EXPERIMENTS[@]} * ${#MODEL_LR_VALUES[@]}))
+  gpu1_total_runs=$((${#gpu1_experiments[@]} * ${#MODEL_LR_VALUES[@]}))
 
   echo "Launching two-GPU LR sweep"
   echo "  Main model LR values: ${MODEL_LR_VALUES[*]}"
   echo "  GLiNER LR values: ${GLINER_LR_VALUES[*]}"
   echo "  GPU 0 device: ${GPU0_DEVICE}"
   echo "  GPU 1 device: ${GPU1_DEVICE}"
-  echo "  GPU 0 experiments: ${GPU0_EXPERIMENTS[*]}"
+  echo "  GPU 0 experiments: ${gpu0_experiments[*]}"
   echo "  GPU 0 GLiNER experiment: ${GPU0_GLINER_EXPERIMENT}"
-  echo "  GPU 1 experiments: ${GPU1_EXPERIMENTS[*]}"
+  echo "  GPU 1 experiments: ${gpu1_experiments[*]}"
   echo "  GPU 0 log: ${gpu0_log}"
   echo "  GPU 1 log: ${gpu1_log}"
   echo "  Plan log: ${plan_log}"
@@ -222,16 +246,16 @@ main() {
     fi
     echo
     echo "GPU 0 total planned runs: ${gpu0_total_runs}"
-    print_queue_plan "GPU 0" "${GPU0_DEVICE}" "${GPU0_EXPERIMENTS[@]}"
+    print_queue_plan "GPU 0" "${GPU0_DEVICE}" "${gpu0_experiments[@]}"
     print_gliner_plan "GPU 0" "${GPU0_DEVICE}" "${GPU0_GLINER_EXPERIMENT}" "${gpu0_main_runs}"
     echo
     echo "GPU 1 total planned runs: ${gpu1_total_runs}"
-    print_queue_plan "GPU 1" "${GPU1_DEVICE}" "${GPU1_EXPERIMENTS[@]}"
+    print_queue_plan "GPU 1" "${GPU1_DEVICE}" "${gpu1_experiments[@]}"
   } | tee "${plan_log}"
 
   (
     cd "${SCRIPT_DIR}"
-    ./run_models.sh "${GPU0_EXPERIMENTS[@]}" -- \
+    ./run_models.sh "${gpu0_experiments[@]}" -- \
       --device "${GPU0_DEVICE}" \
       "${output_args[@]}" \
       "${model_lr_args[@]}" \
@@ -247,7 +271,7 @@ main() {
 
   (
     cd "${SCRIPT_DIR}"
-    ./run_models.sh "${GPU1_EXPERIMENTS[@]}" -- \
+    ./run_models.sh "${gpu1_experiments[@]}" -- \
       --device "${GPU1_DEVICE}" \
       "${output_args[@]}" \
       "${model_lr_args[@]}" \

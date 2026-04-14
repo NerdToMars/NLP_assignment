@@ -135,6 +135,22 @@ def _make_checkpoint_manager(experiment_name, model_type, model_name=None, top_k
     )
 
 
+def _maybe_save_strict_best_state_dict(state_dict, dev_results, experiment_name, best_dev_strict_f1):
+    """Persist a dedicated strict-F1-best checkpoint alongside the relaxed-best one."""
+
+    strict_f1 = float(dev_results.get("strict_f1", float("-inf")))
+    if not np.isfinite(strict_f1):
+        return best_dev_strict_f1
+
+    if strict_f1 > best_dev_strict_f1:
+        save_path = os.path.join(OUTPUT_DIR, f"{experiment_name}_strict_best.pt")
+        torch.save(state_dict, save_path)
+        print(f"  -> New best dev Strict F1: {strict_f1:.4f} (saved to {save_path})")
+        return strict_f1
+
+    return best_dev_strict_f1
+
+
 def train_deberta(
     model_name="microsoft/deberta-v3-large",
     use_focal_loss=False,
@@ -242,6 +258,7 @@ def train_deberta(
     scheduler = get_linear_schedule_with_warmup(optimizer, int(0.1 * total_steps), total_steps)
 
     best_dev_f1 = 0.0
+    best_dev_strict_f1 = 0.0
     results_log = []
 
     for epoch in range(epochs):
@@ -308,6 +325,13 @@ def train_deberta(
             torch.save(model.state_dict(), save_path)
             print(f"  -> New best dev Relaxed F1: {best_dev_f1:.4f} (saved)")
 
+        best_dev_strict_f1 = _maybe_save_strict_best_state_dict(
+            model.state_dict(),
+            dev_results,
+            experiment_name,
+            best_dev_strict_f1,
+        )
+
         if _update_early_stopping(early_stopping, dev_results.get("dev_loss", float("nan"))):
             print(
                 "  -> Early stopping triggered "
@@ -326,6 +350,7 @@ def train_deberta(
         json.dump(results_log, f, indent=2)
 
     print(f"\nBest dev Relaxed F1: {best_dev_f1:.4f}")
+    print(f"Best dev Strict F1:  {best_dev_strict_f1:.4f}")
     batch = outputs = pbar = dev_results = entity_presence = loss = None
     optimizer.zero_grad(set_to_none=True)
     del model, optimizer, scheduler, train_loader, dev_loader
@@ -436,6 +461,7 @@ def train_bilstm_crf(
 
     optimizer = AdamW(model.parameters(), lr=lr)
     best_dev_f1 = 0.0
+    best_dev_strict_f1 = 0.0
     results_log = []
 
     for epoch in range(epochs):
@@ -479,6 +505,13 @@ def train_bilstm_crf(
             torch.save(model.state_dict(), os.path.join(OUTPUT_DIR, f"{experiment_name}_best.pt"))
             print(f"  -> New best dev Relaxed F1: {best_dev_f1:.4f}")
 
+        best_dev_strict_f1 = _maybe_save_strict_best_state_dict(
+            model.state_dict(),
+            dev_results,
+            experiment_name,
+            best_dev_strict_f1,
+        )
+
         if _update_early_stopping(early_stopping, dev_results.get("dev_loss", float("nan"))):
             print(
                 "  -> Early stopping triggered "
@@ -495,6 +528,8 @@ def train_bilstm_crf(
     with open(os.path.join(OUTPUT_DIR, f"{experiment_name}_log.json"), "w") as f:
         json.dump(results_log, f, indent=2)
 
+    print(f"\nBest dev Relaxed F1: {best_dev_f1:.4f}")
+    print(f"Best dev Strict F1:  {best_dev_strict_f1:.4f}")
     batch = outputs = pbar = dev_results = loss = None
     optimizer.zero_grad(set_to_none=True)
     del model, optimizer, train_loader, dev_loader
@@ -613,6 +648,7 @@ def train_deberta_crf(
     )
 
     best_dev_f1 = 0.0
+    best_dev_strict_f1 = 0.0
     results_log = []
 
     for epoch in range(epochs):
@@ -675,6 +711,13 @@ def train_deberta_crf(
             torch.save(model.state_dict(), save_path)
             print(f"  -> New best dev Relaxed F1: {best_dev_f1:.4f} (saved)")
 
+        best_dev_strict_f1 = _maybe_save_strict_best_state_dict(
+            model.state_dict(),
+            dev_results,
+            experiment_name,
+            best_dev_strict_f1,
+        )
+
         if _update_early_stopping(early_stopping, dev_results.get("dev_loss", float("nan"))):
             print(
                 "  -> Early stopping triggered "
@@ -692,6 +735,7 @@ def train_deberta_crf(
         json.dump(results_log, f, indent=2)
 
     print(f"\nBest dev Relaxed F1: {best_dev_f1:.4f}")
+    print(f"Best dev Strict F1:  {best_dev_strict_f1:.4f}")
     batch = outputs = pbar = dev_results = entity_presence = loss = None
     optimizer.zero_grad(set_to_none=True)
     del model, optimizer, scheduler, train_loader, dev_loader
@@ -827,6 +871,7 @@ def train_deberta_recall_boost(
     scheduler = get_linear_schedule_with_warmup(optimizer, int(0.1 * total_steps), total_steps)
 
     best_dev_f1 = 0.0
+    best_dev_strict_f1 = 0.0
     results_log = []
 
     for epoch in range(epochs):
@@ -901,6 +946,13 @@ def train_deberta_recall_boost(
             torch.save(model.state_dict(), save_path)
             print(f"  -> New best dev Relaxed F1: {best_dev_f1:.4f} (saved)")
 
+        best_dev_strict_f1 = _maybe_save_strict_best_state_dict(
+            model.state_dict(),
+            dev_results,
+            experiment_name,
+            best_dev_strict_f1,
+        )
+
         if _update_early_stopping(early_stopping, dev_results.get("dev_loss", float("nan"))):
             print(
                 "  -> Early stopping triggered "
@@ -918,6 +970,7 @@ def train_deberta_recall_boost(
         json.dump(results_log, f, indent=2)
 
     print(f"\nBest dev Relaxed F1: {best_dev_f1:.4f}")
+    print(f"Best dev Strict F1:  {best_dev_strict_f1:.4f}")
     batch = dev_results = entity_presence = encoder_out = sequence_output = logits = loss = pbar = None
     optimizer.zero_grad(set_to_none=True)
     del model, optimizer, scheduler, train_loader, dev_loader
@@ -991,6 +1044,7 @@ def train_deberta_rdrop(
     scheduler = get_linear_schedule_with_warmup(optimizer, int(0.1 * total_steps), total_steps)
 
     best_dev_f1 = 0.0
+    best_dev_strict_f1 = 0.0
     results_log = []
 
     for epoch in range(epochs):
@@ -1080,6 +1134,13 @@ def train_deberta_rdrop(
             torch.save(model.state_dict(), save_path)
             print(f"  -> New best dev Relaxed F1: {best_dev_f1:.4f} (saved)")
 
+        best_dev_strict_f1 = _maybe_save_strict_best_state_dict(
+            model.state_dict(),
+            dev_results,
+            experiment_name,
+            best_dev_strict_f1,
+        )
+
         if _update_early_stopping(early_stopping, dev_results.get("dev_loss", float("nan"))):
             print(
                 "  -> Early stopping triggered "
@@ -1097,6 +1158,7 @@ def train_deberta_rdrop(
         json.dump(results_log, f, indent=2)
 
     print(f"\nBest dev Relaxed F1: {best_dev_f1:.4f}")
+    print(f"Best dev Strict F1:  {best_dev_strict_f1:.4f}")
     batch = dev_results = entity_presence = encoder_out1 = encoder_out2 = None
     seq1 = seq2 = logits1 = logits2 = ce1 = ce2 = kl_loss = aux_loss = loss = pbar = None
     optimizer.zero_grad(set_to_none=True)
@@ -1177,6 +1239,7 @@ def train_deberta_fgm_swa(
     swa_count = 0
 
     best_dev_f1 = 0.0
+    best_dev_strict_f1 = 0.0
     results_log = []
 
     for epoch in range(epochs):
@@ -1284,6 +1347,13 @@ def train_deberta_fgm_swa(
             torch.save(model.state_dict(), save_path)
             print(f"  -> New best dev Relaxed F1: {best_dev_f1:.4f} (saved)")
 
+        best_dev_strict_f1 = _maybe_save_strict_best_state_dict(
+            model.state_dict(),
+            dev_results,
+            experiment_name,
+            best_dev_strict_f1,
+        )
+
         if _update_early_stopping(early_stopping, dev_results.get("dev_loss", float("nan"))):
             print(
                 "  -> Early stopping triggered "
@@ -1326,10 +1396,18 @@ def train_deberta_fgm_swa(
             save_path = os.path.join(OUTPUT_DIR, f"{experiment_name}_swa.pt")
             torch.save(model.state_dict(), save_path)
 
+        best_dev_strict_f1 = _maybe_save_strict_best_state_dict(
+            model.state_dict(),
+            swa_results,
+            experiment_name,
+            best_dev_strict_f1,
+        )
+
     with open(os.path.join(OUTPUT_DIR, f"{experiment_name}_log.json"), "w") as f:
         json.dump(results_log, f, indent=2)
 
     print(f"\nBest dev Relaxed F1: {best_dev_f1:.4f}")
+    print(f"Best dev Strict F1:  {best_dev_strict_f1:.4f}")
     batch = dev_results = entity_presence = encoder_out = encoder_out_adv = None
     seq = seq_adv = logits = logits_adv = loss = loss_adv = loss_scaled = loss_adv_scaled = None
     pbar = saved_perturbations = None

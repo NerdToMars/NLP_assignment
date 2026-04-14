@@ -20,6 +20,7 @@ from .data import ID2LABEL, LABEL2ID, NERDataset, load_dataframe, preprocess_tok
 from .deberta_ner import DeBERTaNER, DeBERTaNERMultiTask
 from .ensemble_v2 import apply_bio_repair
 from .evaluation import evaluate_ner
+from .preprocessing import restore_forced_o_predictions
 from .train import _clear_torch_memory, _early_stopping_status, _init_early_stopping, _update_early_stopping, train_deberta
 
 
@@ -473,10 +474,21 @@ def _predict_ner_subset(
                     if word_id is not None and word_id not in word_preds:
                         word_preds[word_id] = ID2LABEL[preds[batch_index][token_index]]
 
-                decoded_predictions[original_index] = [
-                    word_preds.get(word_index, "O")
-                    for word_index in range(len(sample["raw_tags"]))
-                ]
+                if "kept_indices" in sample and "raw_tokens" in sample:
+                    cleaned_pred_tags = [
+                        word_preds.get(word_index, "O")
+                        for word_index in range(len(sample["kept_indices"]))
+                    ]
+                    decoded_predictions[original_index] = restore_forced_o_predictions(
+                        sample["raw_tokens"],
+                        sample["kept_indices"],
+                        cleaned_pred_tags,
+                    )
+                else:
+                    decoded_predictions[original_index] = [
+                        word_preds.get(word_index, "O")
+                        for word_index in range(len(sample["raw_tags"]))
+                    ]
                 sample_ptr += 1
 
     return decoded_predictions
