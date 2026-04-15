@@ -106,19 +106,19 @@
 \begin{frame}{Dataset: Reddit-Impacts 2.0}
   1{,}378 opioid-subreddit posts with BIO annotations.
   \begin{center}
-    \includegraphics[width=0.95\textwidth]{fig_eda.png}
+    \includegraphics[width=0.92\textwidth]{fig_eda.png}
   \end{center}
-  \vspace{-0.5em}
-  \footnotesize \textbf{Left:} Train/Dev are Clinical-heavy; Test flips to $\approx$70\,\% Social.
+  \vspace{-0.8em}
+  \scriptsize \textbf{Left:} Train/Dev are Clinical-heavy; Test flips to $\approx$70\,\% Social.
   \textbf{Middle:} Social spans are longer and heavier-tailed than Clinical.
   \textbf{Right:} most Dev posts contain no entities at all.
-  \medskip
+  \smallskip
 
-  \textbf{Preprocessing:} replace \texttt{@usernames} and URLs with placeholders; no lower-casing; first-subword alignment per tokenizer.
+  \textbf{Preprocessing as an axis (v2 vs v5).} Every family is run twice -- \textbf{v2}\,$=$ raw text, \textbf{v5}\,$=$ mojibake repair, \texttt{@user}/URL masking, emoji/punctuation scrub, positions restored as \texttt{O} at inference. Both regimes feed the cross-version ensemble search.
 \end{frame}
 
 % ---------- 5. Models ----------
-\begin{frame}{Four Architecturally Distinct Models}
+\begin{frame}{Model Comparison: Architectures and Backbones}
   \centering
   \begin{tikzpicture}[node distance=3mm and 4mm]
     %% --- BiLSTM-CRF ---
@@ -133,41 +133,29 @@
     \draw[arr] (bl_lin) -- (bl_crf);
     \node[label, left=1mm of bl_emb] {\textbf{BiLSTM-CRF}};
 
-    %% --- DeBERTa baseline ---
-    \node[block, below=6mm of bl_emb] (db_in) {tokens};
-    \node[block, right=of db_in] (db_enc) {DeBERTa-v3-large\\encoder (24 layers, $h{=}1024$)};
-    \node[block, right=of db_enc] (db_drop) {Dropout};
-    \node[block, right=of db_drop] (db_lin) {Linear\\$1024{\to}5$};
-    \node[op, right=of db_lin] (db_sm) {softmax\\per token};
-    \draw[arr] (db_in) -- (db_enc);
-    \draw[arr] (db_enc) -- (db_drop);
-    \draw[arr] (db_drop) -- (db_lin);
-    \draw[arr] (db_lin) -- (db_sm);
-    \node[label, left=1mm of db_in] {\textbf{DeBERTa-v3-large}};
-
-    %% --- GLiNER zero-shot ---
-    \node[block, below=6mm of db_in] (gl_in) {text};
-    \node[block, right=of gl_in] (gl_model) {gliner\_large-v2.1\\(pretrained, frozen)};
-    \node[block, right=of gl_model] (gl_lab) {28 sub-labels\\threshold 0.3};
-    \node[block, right=of gl_lab] (gl_map) {map to\\\{Clin, Soc\}};
-    \node[op, right=of gl_map] (gl_bio) {char-span\\$\to$ BIO};
+    %% --- GLiNER fine-tuned ---
+    \node[block, below=4mm of bl_emb] (gl_in) {text};
+    \node[block, right=of gl_in] (gl_model) {gliner\_large-v2.1\\(\emph{fine-tuned})};
+    \node[block, right=of gl_model] (gl_head) {span scorer\\Clin / Soc};
+    \node[block, right=of gl_head] (gl_thr) {threshold\\$0.3$};
+    \node[op, right=of gl_thr] (gl_bio) {char-span\\$\to$ BIO};
     \draw[arr] (gl_in) -- (gl_model);
-    \draw[arr] (gl_model) -- (gl_lab);
-    \draw[arr] (gl_lab) -- (gl_map);
-    \draw[arr] (gl_map) -- (gl_bio);
-    \node[label, left=1mm of gl_in] {\textbf{GLiNER (zero-shot)}};
+    \draw[arr] (gl_model) -- (gl_head);
+    \draw[arr] (gl_head) -- (gl_thr);
+    \draw[arr] (gl_thr) -- (gl_bio);
+    \node[label, left=1mm of gl_in] {\textbf{GLiNER (fine-tuned)}};
 
-    %% --- Span NER ---
-    \node[block, below=6mm of gl_in] (sp_in) {tokens};
-    \node[block, right=of sp_in] (sp_enc) {DeBERTa\\encoder};
-    \node[block, right=of sp_enc] (sp_enum) {enumerate\\spans len${\le}15$};
-    \node[block, right=of sp_enum] (sp_repr) {$[h_s;h_e;w]$\\MLP};
-    \node[op, right=of sp_repr] (sp_dec) {greedy\\non-overlap};
-    \draw[arr] (sp_in) -- (sp_enc);
-    \draw[arr] (sp_enc) -- (sp_enum);
-    \draw[arr] (sp_enum) -- (sp_repr);
-    \draw[arr] (sp_repr) -- (sp_dec);
-    \node[label, left=1mm of sp_in] {\textbf{Span-based NER}};
+    %% --- Transformer token classifier (shared head, different encoders) ---
+    \node[block, below=4mm of gl_in] (tc_in) {tokens};
+    \node[block, right=of tc_in, text width=3.2cm] (tc_enc) {Encoder:\\DeBERTa-v3-large \emph{or}\\SocBERT \emph{or} StressRoBERTa};
+    \node[block, right=of tc_enc] (tc_drop) {Dropout};
+    \node[block, right=of tc_drop] (tc_lin) {Linear\\$h{\to}5$};
+    \node[op, right=of tc_lin] (tc_sm) {softmax\\per token};
+    \draw[arr] (tc_in) -- (tc_enc);
+    \draw[arr] (tc_enc) -- (tc_drop);
+    \draw[arr] (tc_drop) -- (tc_lin);
+    \draw[arr] (tc_lin) -- (tc_sm);
+    \node[label, left=1mm of tc_in] {\textbf{Transformer + linear head}};
   \end{tikzpicture}
 
   \vspace{-1mm}
@@ -177,26 +165,27 @@
     Model & Dev Relaxed F1 (best LR) \\
     \midrule
     BiLSTM-CRF & 0.296 \\
-    GLiNER zero-shot & 0.317 \\
-    Span-based NER (DeBERTa) & -- (early prototype, not benchmarked) \\
-    DeBERTa baseline & \textbf{0.595} \\
+    GLiNER (fine-tuned) & 0.524 \\
+    SocBERT (Reddit-domain) & 0.404 \\
+    StressRoBERTa (mental-health) & 0.482 \\
+    DeBERTa-v3-large baseline & \textbf{0.595} \\
     \bottomrule
   \end{tabular}
   \end{center}
-  \scriptsize DeBERTa dominates -- from here, everything builds on that encoder.
+  \scriptsize General-purpose DeBERTa dominates; domain-adapted encoders underperform; zero-shot GLiNER bottoms out at $0.317$ so fine-tuning is essential. Every innovation from here builds on DeBERTa.
 \end{frame}
 
 % ---------- 6. Roadmap of Innovations ----------
-\begin{frame}{Our Strategy: Seven Targeted Innovations}
+\begin{frame}{Our Strategy: Seven Contribution Buckets Beyond the Baselines}
   \footnotesize
-  \begin{enumerate}
-    \item \textbf{Focal loss} with test-aware class weights -- attacks distribution shift.
-    \item \textbf{Entity definition prompting} -- prepend definitions, mask from loss.
-    \item \textbf{Multi-task} auxiliary entity-presence head -- shapes the encoder.
-    \item \textbf{O-class downweighting} + multi-task -- bias the model toward recall.
-    \item \textbf{R-Drop} consistency regularization -- dropout-based calibration.
-    \item \textbf{FGM adversarial training + SWA} -- robust + averaged weights.
-    \item \textbf{Majority-vote ensemble search} -- diversity $>$ individual quality.
+  \begin{enumerate}\setlength{\itemsep}{0pt}
+    \item \textbf{Loss/prompt/multitask ablations} -- focal loss, definition prompting, multi-task head, synthetic-data curriculum.
+    \item \textbf{Advanced regularization} -- O-class downweighting (recall-boost), R-Drop, FGM $+$ SWA.
+    \item \textbf{Preprocessing as an axis} -- raw (v2) vs cleaned (v5) runtime regimes.
+    \item \textbf{Structured prediction pipelines} -- hierarchical DeBERTa, two-step extract$\to$classify, joint sentence$+$token heads, span-nested GLiNER.
+    \item \textbf{Domain-adapted backbones} -- SocBERT (Reddit), StressRoBERTa (mental health).
+    \item \textbf{Weight-space model soup} -- top-$K$ checkpoint averaging.
+    \item \textbf{Prediction-space ensemble search} -- exhaustive subsets, majority vote and probability averaging.
   \end{enumerate}
   \vfill
   \textcolor{neutral}{\footnotesize Each innovation is evaluated with a small LR sweep [2e-5, 5e-5] and the best LR per family is reported.}
@@ -428,76 +417,53 @@
 
 % ---------- 11b. Training dynamics ----------
 \begin{frame}{Training Dynamics Across Recipes}
-  Per-epoch dev relaxed F1 and validation loss for the top single-model families
-  (best LR per family, on \texttt{outputs\_new\_final\_clean}).
+  \vspace{-0.8em}
   \begin{center}
-    \includegraphics[width=0.98\textwidth]{fig_training_curves.png}
+    \includegraphics[width=0.64\textwidth]{fig_training_curves.png}
   \end{center}
-  \vspace{-0.4em}
-  \footnotesize
-  \textbf{Left:} FGM+SWA, R-Drop, and Recall-Boost all plateau around epoch 6--8; the extra recipes give
-  a modest lift over the baseline, not a regime change.
-  \textbf{Right:} Recall-Boost and R-Drop keep the dev loss noticeably lower and more stable late
-  in training -- regularization is effective, even when the F1 curve has flattened.
+  \vspace{-1.0em}
+  \scriptsize
+  \textbf{Top row:} Definition Prompting (orange) tops both Relaxed and Strict F1 from
+  epoch~4 onward -- the clearest single-recipe win.
+  \textbf{Bottom row:} Dev loss separates recipes even when F1 curves look close; Sentence+Token
+  Hierarchy drifts up after epoch~6, signalling mild overfit.
 \end{frame}
 
-% ---------- 11c. Two auxiliary recipes ----------
-\begin{frame}{Two Auxiliary Recipes Used by the Final System}
-  \begin{columns}[T,onlytextwidth]
-    \column{0.52\textwidth}
-    \textbf{Hierarchical pipeline} (sentence gate $\to$ NER)
-    \smallskip
+% ---------- 11c. Structured prediction pipelines ----------
+\begin{frame}{Structured Prediction Pipelines}
+  \footnotesize
+  Four structured variants on top of DeBERTa, each testing a different inductive bias:
+  \vspace{-0.3em}
+  \begin{center}\scriptsize
+  \begin{tabular}{p{3.9cm}p{6.7cm}c}
+    \toprule
+    Pipeline & Idea & Relaxed F1 \\
+    \midrule
+    \textbf{Hierarchical DeBERTa} & \texttt{[CLS]} sentence classifier gates a multi-task NER; 10\,\% of no-impact rows kept & \textbf{0.604} \\[2pt]
+    Two-Step Impact Pipeline & Stage 1: binary span extraction; Stage 2: clinical / social classifier per span & 0.534 \\[2pt]
+    Sentence $+$ Token Hierarchy & One model with joint sentence presence head and token BIO head & 0.530 \\[2pt]
+    Span-nested GLiNER & Span scorer with nested-span enumeration and overlap-aware decoding & 0.443 \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+  \vspace{-0.3em}
+  \textbf{Hierarchical DeBERTa} is the clear winner and anchors the winning ensemble on the next slide.
+  The two-step and joint-hierarchy variants are close to each other but noticeably below the plain token classifier baseline ($0.595$); span-nested GLiNER plateaus much lower.
+  \medskip
 
-    \centering
-    \begin{tikzpicture}[node distance=2mm and 2mm]
-      \node[block, text width=1.6cm] (h_in) {sentence};
-      \node[block, right=of h_in, fill=brand!15, text width=1.9cm] (h_cls) {CLS classifier};
-      \node[op, right=of h_cls, text width=1.2cm] (h_gate) {gate\\$>0.5$};
-      \node[block, below=2mm of h_cls, fill=good!15, text width=4.4cm] (h_ner) {multi-task DeBERTa NER (10\% no-impact)};
-      \draw[arr] (h_in) -- (h_cls);
-      \draw[arr] (h_cls) -- (h_gate);
-      \draw[arr] (h_gate.south) -- ++(0,-2mm) -| (h_ner.east);
-    \end{tikzpicture}
-    \smallskip
-
-    \scriptsize
-    \textbf{Stage 1:} sentence classifier over \texttt{[CLS]} decides ``does this sentence contain any impact?''.
-    \textbf{Stage 2:} NER runs only on positive sentences; its training set keeps all impact rows and only 10\,\% of no-impact rows to reduce the O-class prior.
-    Best single relaxed-F1: \textbf{0.604}.
-
-    \column{0.46\textwidth}
-    \textbf{Model soup} (weight averaging)
-    \smallskip
-
-    \centering
-    \begin{tikzpicture}[node distance=1.5mm and 3mm]
-      \node[block, text width=1.7cm] (s1) {ckpt $\theta_1$};
-      \node[block, right=of s1, text width=1.7cm] (s2) {ckpt $\theta_2$};
-      \node[block, right=of s2, text width=1.7cm] (s3) {ckpt $\theta_3$};
-      \node[op, below=4mm of s2, text width=3.2cm] (soup) {$\bar\theta = \tfrac{1}{K}\sum_k \theta_k$};
-      \draw[arr] (s1.south) -- (soup.north west);
-      \draw[arr] (s2) -- (soup);
-      \draw[arr] (s3.south) -- (soup.north east);
-    \end{tikzpicture}
-    \smallskip
-
-    \scriptsize
-    Average top-$K$ dev-F1 checkpoints from a single LR sweep (same arch., so interpolation is well-defined).
-    Like SWA, but across checkpoints rather than late-training iterates.
-    Best soup: recall-boost s42 top-3 @ \textbf{0.595} (strict $+0.033$).
-  \end{columns}
-  \vfill
-  \scriptsize \textcolor{neutral}{Both feed the ensemble search on the next slide; the hierarchical pipeline anchors the winning 4-model vote.}
+  \textcolor{neutral}{\scriptsize \textbf{Model soup (weight-space aggregation).} Orthogonal to everything above: average top-$K$ dev-F1 checkpoints from a single LR sweep ($\bar\theta = \tfrac{1}{K}\sum_k \theta_k$). Best soup: recall-boost s42 top-3 at $0.595$ (strict $+0.033$). Soup is only defined for same-architecture runs -- GLiNER, BiLSTM, and every pipeline family above are \emph{not} soupable.}
 \end{frame}
 
 % ---------- 12. Ensemble ----------
 \begin{frame}{Innovation 7: Ensemble Search -- Majority Vote Beats SOTA}
-  Exhaustive cross-version search: top-7 relaxed + top-7 strict candidates from each of
-  two preprocessing regimes $\Rightarrow$ 28 candidates. All subsets of size 2--5
-  (122{,}409 combinations) scored under majority vote and probability average.
-  \medskip
+  \scriptsize
+  \textbf{Two complementary searches}, both exhaustive over size-2--5 subsets:
+  \begin{itemize}\setlength{\itemsep}{0pt}
+    \item \textbf{Majority vote, cross-version:} top-7 relaxed $+$ top-7 strict from each regime (v2 / v5) $\Rightarrow$ 28 candidates, \textbf{122{,}409 combinations}. Operates on BIO tag sequences -- every family is eligible.
+    \item \textbf{Probability average, v2-only:} 7 candidates, 112 combinations. Averages per-token class distributions, so GLiNER span models and structured pipelines are excluded.
+  \end{itemize}
 
-  \begin{center}\footnotesize
+  \begin{center}\scriptsize
   \begin{tabular}{lcccc}
     \toprule
     Ensemble & Relaxed F1 & Strict F1 & Precision & Recall \\
@@ -508,33 +474,34 @@
     \textbf{4 models (majority)} & \ours & 0.509 & 0.648 & 0.623 \\
     5 models (majority) & 0.631 & \textbf{0.518} & 0.670 & 0.597 \\
     \midrule
-    Best probability average & 0.614 & 0.413 & 0.653 & 0.580 \\
+    Best probability average (v2, 7 cand.) & 0.614 & 0.431 & 0.653 & 0.580 \\
     \bottomrule
   \end{tabular}
   \end{center}
   \medskip
 
-  \textbf{Best ensemble:} hierarchical-pipeline anchor $+$ 3 complementary DeBERTa recipes drawn from
-  both preprocessing regimes -- training-objective diversity is the engine, not seed diversity.
-  \medskip
-
-  \textbf{Clearly beats published SOTA \sota{} on dev} ($+0.025$).
-  \textcolor{neutral}{\footnotesize Training-objective diversity $>$ seed diversity; hard voting $>$ soft averaging here.}
+  \textbf{Best ensemble:} hierarchical-pipeline anchor $+$ 3 complementary DeBERTa recipes across both regimes. \textbf{Beats published SOTA \sota{} on dev} ($+0.025$). Hard voting $>$ soft averaging here ($0.635$ vs $0.614$).
 \end{frame}
 
 % ---------- 13. Full Ablation ----------
 \begin{frame}{Full Ablation Table (LR-Selected per Family)}
-  \centering\scriptsize
+  \centering\tiny
   \begin{tabular}{lcccc}
     \toprule
     Model & Relaxed F1 & Strict F1 & Best LR & Epoch \\
     \midrule
     BiLSTM-CRF & 0.296 & 0.256 & 5e-4 & 15 \\
+    GLiNER (fine-tuned) & 0.524 & -- & 2e-5 & -- \\
+    \quad Span-nested GLiNER & 0.443 & -- & 1e-5 & -- \\
+    SocBERT baseline & 0.404 & 0.277 & 5e-5 & -- \\
+    StressRoBERTa baseline & 0.482 & 0.270 & 2e-5 & -- \\
     DeBERTa baseline & 0.595 & 0.409 & 2e-5 & 7 \\
     \quad + Focal loss & 0.541 & 0.341 & 2e-5 & 6 \\
     \quad + Multi-task & 0.581 & 0.382 & 5e-5 & 9 \\
     \textbf{\quad + Definition prompting} & \bestsingle & \textbf{0.410} & 5e-5 & 5 \\
-    Hierarchical pipeline & 0.604 & 0.372 & 2e-5 & -- \\
+    Hierarchical DeBERTa pipeline & 0.604 & 0.372 & 2e-5 & -- \\
+    Two-Step Impact Pipeline & 0.534 & 0.404 & 2e-5 & -- \\
+    Sentence + Token Hierarchy & 0.530 & 0.374 & 5e-5 & -- \\
     Recall-Boost (seed 42) & 0.582 & 0.312 & 2e-5 & 7 \\
     R-Drop (seed 123) & 0.577 & 0.380 & 2e-5 & 9 \\
     FGM + SWA (seed 42) & 0.573 & 0.356 & 2e-5 & 10 \\
@@ -618,8 +585,8 @@
 \begin{frame}{Summary}
   \begin{itemize}
     \item \textbf{Task:} BIO NER for Clinical/Social impacts of substance use on Reddit.
-    \item \textbf{Models:} BiLSTM-CRF, GLiNER, Span-NER, DeBERTa-v3-large.
-    \item \textbf{7 innovations}, each evaluated under an LR sweep.
+    \item \textbf{Models:} BiLSTM-CRF, GLiNER (fine-tuned), SocBERT, StressRoBERTa, DeBERTa-v3-large.
+    \item \textbf{7 contribution buckets:} ablations, advanced regularization, preprocessing axis, structured pipelines, domain backbones, model soup, ensemble search -- each evaluated under an LR sweep.
     \item \textbf{Best single model:} Definition Prompting, $F_{1} = \bestsingle$ (exceeds baseline by $+0.018$).
     \item \textbf{Best system:} 4-model majority-vote ensemble,
           $F_{1} = \ours$, clearly beating the published SOTA \sota{} on dev ($+0.025$).
