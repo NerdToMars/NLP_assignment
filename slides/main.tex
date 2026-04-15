@@ -44,13 +44,13 @@
 
 % ---------- 2. The Task ----------
 \begin{frame}{The Task: Impact Extraction from Reddit}
-  \textbf{SMM4H--HeaRD 2026 Task 7.} Token-level NER on opioid-subreddit posts.
+  \textbf{SMM4H--HeaRD 2026 Task 7 Contest } Token-level NER on opioid-subreddit posts.
   \medskip
 
-  Identify two entity types using BIO tagging:
+  Task: To identify two entity types using BIO tagging:
   \begin{itemize}
-    \item \textcolor{brand}{\textbf{ClinicalImpacts}} -- overdose, withdrawal, depression, insomnia \ldots
-    \item \textcolor{accent}{\textbf{SocialImpacts}} -- job loss, arrest, homelessness, broken relationships \ldots
+    \item \textcolor{brand}{\textbf{ClinicalImpacts}} -- for e.g. overdose, withdrawal, depression, insomnia \ldots
+    \item \textcolor{accent}{\textbf{SocialImpacts}} -- for e.g. job loss, arrest, homelessness, broken relationships \ldots
   \end{itemize}
 
   \medskip
@@ -61,7 +61,7 @@
   \end{quote}
 
   \vfill
-  \footnotesize Useful for population-level signal mining from user-generated text -- public health surveillance, harm-reduction research.
+  \textbf{Motivation} \\Useful for population-level signal mining from user-generated text -- public health surveillance, harm-reduction research.
 \end{frame}
 
 % ---------- 3. Why It's Hard ----------
@@ -197,19 +197,19 @@
     \item \textbf{Majority-vote ensemble search} -- diversity $>$ individual quality.
   \end{enumerate}
   \vfill
-  \textcolor{neutral}{\footnotesize Each innovation is evaluated with a small LR sweep (2e-5, 5e-5) and the best LR per family is reported. The winners are not the ones we expected going in.}
+  \textcolor{neutral}{\footnotesize Each innovation is evaluated with a small LR sweep [2e-5, 5e-5] and the best LR per family is reported. The winners are not the ones we expected going in.}
 \end{frame}
 
 % ---------- 7. Innovation 1: Focal Loss ----------
 \begin{frame}{Innovation 1: Distribution-Aware Focal Loss}
-  Focal loss with $\gamma=2.0$ and Social class weight $\times 1.5$.
+  Focal loss with $\gamma=2.0$. Social class weight $\times 1.5$.
   \medskip
   \begin{center}\small
   \begin{tabular}{lcc}
     \toprule
     & Relaxed F1 & Strict F1 \\
     \midrule
-    DeBERTa baseline & \textbf{0.566} & 0.400 \\
+    DeBERTa baseline & \textbf{0.566} & \textbf{0.400} \\
     + Focal loss & 0.528 & 0.290 \\
     \bottomrule
   \end{tabular}
@@ -217,7 +217,7 @@
   \medskip
 
   \textbf{Finding:} aggressive Social reweighting pushes the model to over-fire on
-  Social tokens. Both relaxed and strict F1 drop sharply ($-0.038$ / $-0.110$).
+  Social tokens. Both relaxed and strict F1 drop sharply by $-0.038$ and $-0.110$.
 
   \medskip
   \textcolor{neutral}{\footnotesize Lesson: distribution shift is real, but class weighting is the wrong lever for it.}
@@ -233,7 +233,7 @@
     \node[block, fill=brand!15, text width=10.2cm] (def) {%
       \texttt{[CLS]} \textit{Clinical Impacts are physical or psychological consequences $\ldots$ overdose, withdrawal, $\ldots$ Social Impacts are social, occupational, legal $\ldots$ job loss, arrest, $\ldots$} \texttt{[SEP]}};
     \node[block, fill=accent!15, below=of def, text width=10.2cm] (text) {%
-      \texttt{I lost my job last month and had constant panic attacks . [SEP]}};
+      \texttt{I lost my job last month and had constant panic attacks. [SEP]}};
     \node[block, fill=neutral!15, below=of text, text width=10.2cm] (labels) {%
       \textbf{Labels:} \texttt{-100 -100 $\ldots$ -100} $\mid$ \texttt{O B-Soc I-Soc O O O B-Clin I-Clin I-Clin O}};
     \draw[arr] (def) -- (text);
@@ -250,7 +250,7 @@
     & Relaxed F1 & Strict F1 \\
     \midrule
     DeBERTa baseline & 0.566 & 0.400 \\
-    + Definition prompting & \textbf{0.572} ($+0.006$) & \textbf{0.402} \\
+    + Definition prompting & \textbf{0.572} & \textbf{0.402} \\
     \bottomrule
   \end{tabular}
   \end{center}
@@ -262,9 +262,9 @@
 
   \begin{center}\scriptsize
   \begin{tikzpicture}[node distance=1.5mm and 3mm]
-    \node[block, text width=2.0cm] (toks) {\texttt{I lost my job$\ldots$}};
+    \node[text width=2.0cm] (toks) {\texttt{I lost my job$\ldots$}};
     \node[block, right=of toks, text width=1.8cm] (enc) {DeBERTa\\encoder};
-    \node[block, right=of enc, text width=1.6cm] (cls) {\texttt{[CLS]}\\hidden};
+    \node[right=of enc, text width=0.8cm] (cls) {\texttt{[CLS]}\\hidden};
     \node[block, above right=of cls, text width=2.2cm] (main) {Linear $1024{\to}5$\\token CE};
     \node[block, below right=of cls, fill=good!15, text width=2.4cm] (aux) {Linear $1024{\to}2$\\``has entity?''};
     \draw[arr] (toks) -- (enc);
@@ -275,14 +275,16 @@
   \end{center}
 
   \footnotesize
-  $\displaystyle \mathcal{L} = \text{CE}_{\text{token}} + 0.3 \cdot \text{CE}_{\text{presence}},$ where
-  $\text{presence} = \mathbb{1}[\text{sentence has any B/I tag}]$.
+  % \textbf{Losses.} $\displaystyle \mathcal{L} = \text{CE}_{\text{token}} + 0.3 \cdot \text{CE}_{\text{presence}},$ where
+  % $\mathcal{L}_{\text{presence}} = \mathbf{1}[\text{sentence has any B/I tag}]$.
+  \textbf{Losses.} $\displaystyle \mathcal{L} = \text{CE}_{\text{token}} + 0.3 \cdot \text{CE}_{\text{presence}},$ where
+  the target for $\text{CE}_{\text{presence}}$ is $y = \mathbf{1}[\text{sentence has any B/I tag}]$.
   \smallskip
 
-  \textbf{Result.} Relaxed F1 $= 0.529$ ($-0.037$ vs baseline $0.566$).
+  \textbf{Result.} Relaxed F1 $= 0.529$ ($-0.037$ compared to baseline $0.566$).
   \smallskip
 
-  \textbf{Under the LR sweep, multi-task actually \emph{hurts}} -- the auxiliary signal competes with the token objective for encoder capacity on this small dataset.
+  \textbf{Under the LR sweep, multi-task actually \emph{hurts}.} The auxiliary signal competes with the token objective for encoder capacity on this small dataset.
 \end{frame}
 
 % ---------- 9. Innovation 4: Recall Boost ----------
@@ -292,7 +294,7 @@
   \medskip
 
   \textbf{Intervention.} Cross-entropy weight on the \texttt{O} class: $1.0 \to 0.2$.
-  Entity classes keep weight $1.0$ (Social $\times 1.5$). Combined with multi-task.
+  Entity classes keep weight $1.0$ while Social classes increases to $1.5$. Combined with multi-task.
   \medskip
 
   \begin{center}\small
@@ -320,11 +322,11 @@
 
   \centering
   \begin{tikzpicture}[node distance=4mm and 6mm]
-    \node[block, text width=2.1cm] (batch) {mini-batch\\$x$};
+    \node[text width=2.1cm] (batch) {mini-batch $x$};
     \node[block, right=of batch, fill=brand!15, text width=2.5cm] (fwd1) {DeBERTa forward\\(dropout mask $m_1$)};
-    \node[block, right=of fwd1, text width=1.8cm] (p1) {$p_1$};
+    \node[right=of fwd1, text width=0.5cm] (p1) {$p_1$};
     \node[block, below=10mm of fwd1, fill=brand!15, text width=2.5cm] (fwd2) {DeBERTa forward\\(dropout mask $m_2$)};
-    \node[block, right=of fwd2, text width=1.8cm] (p2) {$p_2$};
+    \node[right=of fwd2, text width=0.5cm] (p2) {$p_2$};
     \node[op, right=10mm of p1, text width=4.5cm] (loss) {%
       $\mathcal{L} = \tfrac{1}{2}(\text{CE}(p_1) + \text{CE}(p_2))$\\$\; +\; \alpha\cdot \mathrm{KL}_{\mathrm{sym}}(p_1 \,\|\, p_2)$};
     \draw[arr] (batch) -- (fwd1);
@@ -337,8 +339,9 @@
   \medskip
 
   \footnotesize
-  $\alpha = 1.0$, symmetric KL over non-masked tokens only. No new parameters --
-  dropout itself is turned into a regularizer that punishes unstable predictions.
+  $\alpha = 1.0$, symmetric KL over non-masked tokens only. \\
+  No new parameters --
+  dropout itself is used as a regularizer that penalizes unstable predictions.
   \medskip
 
   \begin{center}\footnotesize
@@ -418,15 +421,15 @@
   \end{center}
   \vspace{-0.4em}
   \footnotesize
-  \textbf{Left:} FGM+SWA, R-Drop and Recall-Boost all plateau around epoch 6--8; the extra recipes give
+  \textbf{Left:} FGM+SWA, R-Drop, and Recall-Boost all plateau around epoch 6--8; the extra recipes give
   a modest lift over the baseline, not a regime change.
   \textbf{Right:} Recall-Boost and R-Drop keep the dev loss noticeably lower and more stable late
-  in training -- regularization is doing real work, even when the F1 curve has flattened.
+  in training -- regularization is effective, even when the F1 curve has flattened.
 \end{frame}
 
 % ---------- 12. Ensemble ----------
 \begin{frame}{Innovation 7: Ensemble Search -- Majority Vote Wins}
-  Exhaustive search over subsets of the top 9 LR-selected models,
+  Comprehensive search over subsets of the top 9 LR-selected models,
   evaluating both majority vote and probability average.
   \medskip
 
@@ -501,7 +504,7 @@
         \item Implicit: ``those weeks were hell'' often missed.
         \item ``charged with disorderly conduct'' $\to$ partial span.
         \item Negated phrases correctly rejected.
-        \item Third-person references mostly ignored.
+        \item Third-person references are mostly ignored.
       \end{itemize}
   \end{columns}
   \vfill
@@ -521,8 +524,7 @@
     \smallskip
     \item \textbf{Majority vote beats probability averaging.}
           On this small, noisy dev set, hard voting ($0.609$) is more robust
-          than soft averaging ($0.602$). Confident-but-occasionally-wrong
-          models don't combine well via logits.
+          than soft averaging ($0.602$). Confident-but-occasionally-wrong models don't combine well via logits.
   \end{enumerate}
 \end{frame}
 
@@ -538,7 +540,7 @@
 
   \textbf{Future work}
   \begin{itemize}
-    \item LLM-generated synthetic data (Claude / GPT-4o) targeting implicit Social cases.
+    \item LLM-synthesized data (Claude / GPT-4o) targeting implicit Social cases.
     \item Greedy forward selection for principled ensemble membership.
     \item Cross-domain transfer from biomedical NER corpora.
     \item Instruction-tuned Llama-3 with task-specific prompts.
