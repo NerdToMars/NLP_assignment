@@ -20,6 +20,7 @@ GPU0_DEVICE="cuda:0"
 GPU1_DEVICE="cuda:1"
 DRY_RUN=0
 INCLUDE_ADDITIONS=1
+SKIP_EXISTING=0
 
 BACKBONE=""
 MODEL_NAME=""
@@ -41,6 +42,7 @@ Usage:
   ./run_ablation_addition_matrix.sh --lr 5e-4 --lr 2e-5 --lr 5e-5
   ./run_ablation_addition_matrix.sh --gliner-lr 5e-6 --gliner-lr 1e-5 --gliner-lr 2e-5
   ./run_ablation_addition_matrix.sh --combinations-only
+  ./run_ablation_addition_matrix.sh --skip-existing
   ./run_ablation_addition_matrix.sh -- --enable-preprocessing
 
 Behavior:
@@ -48,6 +50,7 @@ Behavior:
       focal, definition prompting, multitask, synthetic+curriculum
   - By default also runs the transformer-based architecture additions:
       hierarchical_deberta, two_step_impact_pipeline, sentence_token_hierarchy
+  - --skip-existing skips runs whose expected best checkpoint / result artifacts already exist.
   - When no backbone/model override is provided, it also runs span_nested_gliner.
   - Splits the queued jobs across two GPUs and gives each job its own LR sweep.
 EOF
@@ -169,6 +172,9 @@ run_spec() {
   if [[ ${DRY_RUN} -eq 1 ]]; then
     cmd+=(--dry-run)
   fi
+  if [[ ${SKIP_EXISTING} -eq 1 ]]; then
+    cmd+=(--skip-existing)
+  fi
   if [[ ${#FORWARDED_ARGS[@]} -gt 0 ]]; then
     cmd+=("${FORWARDED_ARGS[@]}")
   fi
@@ -245,6 +251,10 @@ main() {
         ;;
       --combinations-only)
         INCLUDE_ADDITIONS=0
+        shift
+        ;;
+      --skip-existing)
+        SKIP_EXISTING=1
         shift
         ;;
       --)

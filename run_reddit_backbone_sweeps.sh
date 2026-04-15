@@ -10,6 +10,7 @@ GPU1_DEVICE="cuda:1"
 DRY_RUN=0
 INCLUDE_GATED=0
 INCLUDE_EXTRA_PIPELINES=0
+SKIP_EXISTING=0
 
 MODEL_LR_VALUES=(5e-4 2e-5 5e-5)
 CUSTOM_MODEL_LR_VALUES=0
@@ -58,6 +59,7 @@ Usage:
   ./run_reddit_backbone_sweeps.sh socbert stress_roberta
   ./run_reddit_backbone_sweeps.sh --include-gated
   ./run_reddit_backbone_sweeps.sh --include-extra-pipelines
+  ./run_reddit_backbone_sweeps.sh --skip-existing
   ./run_reddit_backbone_sweeps.sh --output-root /path/to/output_root
   ./run_reddit_backbone_sweeps.sh --lr 5e-4 --lr 2e-5 --lr 5e-5
   ./run_reddit_backbone_sweeps.sh --gpu0-device cuda:0 --gpu1-device cuda:1
@@ -66,6 +68,7 @@ Usage:
 Behavior:
   - Runs only the transformer / DeBERTa-style experiment family on each selected backbone.
   - --include-extra-pipelines also adds two_step_impact_pipeline and sentence_token_hierarchy.
+  - --skip-existing skips runs whose expected best checkpoint / result artifacts already exist.
   - Uses two sequential queues in parallel, one per GPU.
   - Writes each backbone's artifacts into its own output directory.
   - Defaults to the non-gated backbones: socbert stress_roberta
@@ -119,6 +122,10 @@ run_one_backbone() {
 
   if [[ ${DRY_RUN} -eq 1 ]]; then
     forwarded_args+=(--dry-run)
+  fi
+
+  if [[ ${SKIP_EXISTING} -eq 1 ]]; then
+    forwarded_args+=(--skip-existing)
   fi
 
   timestamp="$(date +%Y%m%d_%H%M%S)"
@@ -222,6 +229,10 @@ main() {
         ;;
       --include-extra-pipelines)
         INCLUDE_EXTRA_PIPELINES=1
+        shift
+        ;;
+      --skip-existing)
+        SKIP_EXISTING=1
         shift
         ;;
       --dry-run)

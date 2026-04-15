@@ -248,6 +248,61 @@ def _write_sweep_summary(output_dir: str | os.PathLike[str], experiment_name: st
     return output_path
 
 
+def _completion_markers_for_run(
+    experiment_key: str,
+    preset: ExperimentPreset,
+    run_config: dict[str, Any],
+) -> list[Path]:
+    """Return the files/directories that indicate a run already completed."""
+
+    output_dir = Path(run_config["output_dir"]).resolve()
+    experiment_name = str(run_config["experiment_name"])
+    runner_name = preset.runner if isinstance(preset.runner, str) else ""
+
+    if runner_name in {
+        "src.train:train_deberta",
+        "src.train:train_bilstm_crf",
+        "src.train:train_deberta_recall_boost",
+        "src.train:train_deberta_rdrop",
+        "src.train:train_deberta_fgm_swa",
+        "src.impact_pipelines:train_sentence_token_hierarchy",
+    }:
+        return [output_dir / f"{experiment_name}_best.pt"]
+
+    if experiment_key in {"gliner_finetune", "span_nested_gliner"}:
+        model_output_dir = (
+            Path(run_config["model_output_dir"]).resolve()
+            if run_config.get("model_output_dir") is not None
+            else output_dir / experiment_name
+        )
+        return [model_output_dir, output_dir / f"{experiment_name}_log.json"]
+
+    if experiment_key == "gliner":
+        return [output_dir / f"{experiment_name}_results.json"]
+
+    if experiment_key == "gliner_inference":
+        return [output_dir / f"{experiment_name}_log.json"]
+
+    if experiment_key == "hierarchical_deberta":
+        return [
+            output_dir / f"{experiment_name}_results.json",
+            output_dir / f"{experiment_name}_classifier_best.pt",
+            output_dir / f"{experiment_name}_ner_best.pt",
+        ]
+
+    if experiment_key == "two_step_impact_pipeline":
+        return [
+            output_dir / f"{experiment_name}_results.json",
+            output_dir / f"{experiment_name}_extractor_best.pt",
+            output_dir / f"{experiment_name}_classifier_best.pt",
+        ]
+
+    if experiment_key in {"model_soup", "ensemble_search", "ensemble"}:
+        return [output_dir / f"{experiment_name}_results.json"]
+
+    return []
+
+
 def run_ensemble(
     model_name: str = "microsoft/deberta-v3-large",
     batch_size: int = 30,
@@ -749,6 +804,8 @@ def predict_command(args: argparse.Namespace) -> int:
             batch_size=args.batch_size or 32,
             device=args.device or DEFAULT_DEVICE,
             enable_preprocessing=args.enable_preprocessing,
+            window_overlap=args.window_overlap,
+            window_size=args.window_size,
         )
         return 0
 
@@ -762,6 +819,8 @@ def predict_command(args: argparse.Namespace) -> int:
         device=args.device or DEFAULT_DEVICE,
         definition_prompting=args.definition_prompting,
         enable_preprocessing=args.enable_preprocessing,
+        window_overlap=args.window_overlap,
+        window_size=args.window_size,
     )
     return 0
 
@@ -788,6 +847,8 @@ def predict_ensemble_command(args: argparse.Namespace) -> int:
         data_dir=args.data_dir,
         glove_path=args.glove_path or str(DEFAULT_GLOVE_PATH),
         enable_preprocessing=args.enable_preprocessing,
+        window_overlap=args.window_overlap,
+        window_size=args.window_size,
     )
     return 0
 
@@ -810,6 +871,8 @@ def predict_gliner_command(args: argparse.Namespace) -> int:
         device=args.device or DEFAULT_DEVICE,
         metrics_output=args.metrics_output,
         enable_preprocessing=bool(args.enable_preprocessing),
+        window_overlap=args.window_overlap,
+        window_size=args.window_size,
     )
     return 0
 
@@ -850,6 +913,9 @@ def run_command(args: argparse.Namespace) -> int:
         "top_k_checkpoints": args.top_k_checkpoints,
         "min_models": args.min_models,
         "max_models": args.max_models,
+        "ensemble_sizes": args.ensemble_size,
+        "top_relaxed_per_output": args.top_relaxed_per_output,
+        "top_strict_per_output": args.top_strict_per_output,
         "early_stopping_patience": args.early_stopping_patience,
         "early_stopping_min_delta": args.early_stopping_min_delta,
         "gradient_accumulation_steps": args.gradient_accumulation_steps,
@@ -861,6 +927,7 @@ def run_command(args: argparse.Namespace) -> int:
         "ner_no_impact_keep_ratio": args.ner_no_impact_keep_ratio,
         "vote_method": args.vote_method,
         "save_combination_files": args.save_combination_files,
+        "parallel_workers": args.parallel_workers,
     }
     for key, value in overrides.items():
         if value is not None:
@@ -870,6 +937,13 @@ def run_command(args: argparse.Namespace) -> int:
         config["checkpoint_names"] = args.checkpoint
     if args.source_experiment:
         config["source_experiments"] = args.source_experiment
+    if args.candidate_output_dir:
+        config["candidate_output_dirs"] = [
+            str(Path(candidate_output_dir).expanduser().resolve())
+            if "::" not in candidate_output_dir
+            else f"{Path(candidate_output_dir.rsplit('::', maxsplit=1)[0]).expanduser().resolve()}::{candidate_output_dir.rsplit('::', maxsplit=1)[1]}"
+            for candidate_output_dir in args.candidate_output_dir
+        ]
 
     _maybe_adjust_seeded_name(preset, config, args.experiment_name, args.seed)
     _maybe_adjust_backbone_name(config, args.experiment_name, resolved_backbone)
@@ -899,7 +973,6 @@ def run_command(args: argparse.Namespace) -> int:
     if args.dry_run:
         return 0
 
-    runner = _resolve_runner(preset.runner)
     sweep_results: list[dict[str, Any]] = []
     for index, run_config in enumerate(run_configs, start=1):
         print("\n" + "-" * 60)
@@ -908,6 +981,15 @@ def run_command(args: argparse.Namespace) -> int:
             print(f"Learning rate: {run_config['lr']}")
         print("-" * 60)
 
+        if args.skip_existing:
+            completion_markers = _completion_markers_for_run(args.experiment, preset, run_config)
+            if completion_markers and all(path.exists() for path in completion_markers):
+                print("Skipping run because completion markers already exist:")
+                for marker in completion_markers:
+                    print(f"  - {marker}")
+                continue
+
+        runner = _resolve_runner(preset.runner)
         _apply_runtime_paths(
             run_config["data_dir"],
             run_config["output_dir"],
@@ -1026,6 +1108,12 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--min-models", type=int)
     run_parser.add_argument("--max-models", type=int)
     run_parser.add_argument(
+        "--ensemble-size",
+        type=int,
+        action="append",
+        help="Explicit ensemble size for ensemble_search. Repeat to search a non-contiguous set like 2 3 4 5 6 7 9.",
+    )
+    run_parser.add_argument(
         "--early-stopping-patience",
         type=int,
         help="Stop training after this many epochs without validation-loss improvement above --early-stopping-min-delta. Use 0 to disable.",
@@ -1039,6 +1127,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--source-experiment",
         action="append",
         help="Source experiment name for model_soup or ensemble_search. Repeat to combine multiple runs.",
+    )
+    run_parser.add_argument(
+        "--candidate-output-dir",
+        action="append",
+        help=(
+            "For ensemble_search, scan this output directory for top candidates. "
+            "Optionally append ::enabled or ::disabled to lock the preprocessing mode used by that artifact root."
+        ),
+    )
+    run_parser.add_argument(
+        "--top-relaxed-per-output",
+        type=int,
+        help="For ensemble_search, automatically add the top K relaxed-F1 runs from each --candidate-output-dir.",
+    )
+    run_parser.add_argument(
+        "--top-strict-per-output",
+        type=int,
+        help="For ensemble_search, automatically add the top K strict-F1 runs from each --candidate-output-dir.",
     )
     run_parser.add_argument("--gradient-accumulation-steps", type=int)
     run_parser.add_argument("--o-weight", type=float)
@@ -1057,6 +1163,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="For ensemble_search, write one JSON file per evaluated model combination.",
     )
     run_parser.add_argument(
+        "--parallel-workers",
+        type=int,
+        help="For ensemble_search, score ensemble combinations in parallel on CPU after per-model predictions are cached. Use 1 to disable.",
+    )
+    run_parser.add_argument(
         "--ner-no-impact-keep-ratio",
         type=float,
         help="For hierarchical_deberta, keep this fraction of all-O training rows when training the NER stage.",
@@ -1070,6 +1181,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run",
         action="store_true",
         help="Print the resolved configuration without launching training or evaluation.",
+    )
+    run_parser.add_argument(
+        "--skip-existing",
+        action="store_true",
+        help="Skip a run when its expected best-checkpoint or result artifacts already exist.",
     )
     run_parser.set_defaults(handler=run_command)
 
@@ -1097,6 +1213,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Opt in to the runtime token/data preprocessing pipeline. Default is off.",
     )
     predict_parser.add_argument(
+        "--window-overlap",
+        type=int,
+        default=None,
+        help="Overlap in tokens between long-document inference windows. Defaults to 96.",
+    )
+    predict_parser.add_argument(
+        "--window-size",
+        type=int,
+        default=None,
+        help="Optional token cap per long-document inference window before overlap is applied.",
+    )
+    predict_parser.add_argument(
         "--definition-prompting",
         action="store_true",
         help="Use definition-prepended tokenization when predicting with checkpoints trained that way.",
@@ -1113,7 +1241,6 @@ def build_parser() -> argparse.ArgumentParser:
     predict_ensemble_parser.add_argument(
         "--best-size",
         type=int,
-        choices=(2, 3, 4, 5),
         help="Use the best ensemble of this size from the search results. Default is best_overall.",
     )
     predict_ensemble_parser.add_argument(
@@ -1131,6 +1258,18 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Opt in to the runtime token/data preprocessing pipeline. Default is off.",
     )
+    predict_ensemble_parser.add_argument(
+        "--window-overlap",
+        type=int,
+        default=None,
+        help="Overlap in tokens between long-document inference windows. Defaults to 96.",
+    )
+    predict_ensemble_parser.add_argument(
+        "--window-size",
+        type=int,
+        default=None,
+        help="Optional token cap per long-document inference window before overlap is applied.",
+    )
     predict_ensemble_parser.set_defaults(handler=predict_ensemble_command)
 
     predict_gliner_parser = subparsers.add_parser(
@@ -1147,6 +1286,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--enable-preprocessing",
         action="store_true",
         help="Opt in to the runtime token/data preprocessing pipeline. Default is off.",
+    )
+    predict_gliner_parser.add_argument(
+        "--window-overlap",
+        type=int,
+        default=None,
+        help="Overlap in tokens between long-document inference windows. Defaults to 96.",
+    )
+    predict_gliner_parser.add_argument(
+        "--window-size",
+        type=int,
+        default=None,
+        help="Optional token cap per long-document inference window before overlap is applied.",
     )
     predict_gliner_parser.set_defaults(handler=predict_gliner_command)
 

@@ -22,7 +22,6 @@ from .preprocessing import (
     preprocess_tokens_with_alignment as runtime_preprocess_tokens_with_alignment,
     restore_forced_o_predictions,
 )
-from .train import fix_bio_tags
 
 
 LABEL2ID = {
@@ -34,6 +33,7 @@ LABEL2ID = {
 }
 ID2LABEL = {value: key for key, value in LABEL2ID.items()}
 NUM_LABELS = len(LABEL2ID)
+DEFAULT_WINDOW_OVERLAP = 96
 
 CLINICAL_DEFINITION = (
     "Clinical Impacts are physical or psychological consequences of substance use "
@@ -478,6 +478,458 @@ def load_glove_embeddings(glove_path: str | Path, word2idx: dict[str, int], dim:
     return torch.tensor(embeddings)
 
 
+def _normalize_window_overlap(window_overlap: int | None) -> int:
+    if window_overlap is None:
+        return DEFAULT_WINDOW_OVERLAP
+    return max(0, int(window_overlap))
+
+
+def _count_transformer_input_tokens(
+    tokenizer: AutoTokenizer,
+    tokens: list[str],
+    definition_prompting: bool = False,
+) -> int:
+    if definition_prompting:
+        def_tokens = tokenizer.tokenize(ENTITY_DEFINITION_PREFIX)
+        text_encoding = tokenizer(
+            tokens,
+            is_split_into_words=True,
+            truncation=False,
+            add_special_tokens=False,
+        )
+        return 1 + len(def_tokens) + 1 + len(text_encoding["input_ids"]) + 1
+
+    encoding = tokenizer(
+        tokens,
+        is_split_into_words=True,
+        truncation=False,
+    )
+    return len(encoding["input_ids"])
+
+
+def _split_token_windows(
+    tokens: list[str],
+    max_items: int,
+    overlap: int,
+    count_fn,
+    window_size: int | None = None,
+) -> list[tuple[int, int]]:
+    if not tokens:
+        return []
+
+    normalized_overlap = max(0, int(overlap))
+    max_window_items = max(1, int(window_size)) if window_size is not None else max_items
+    windows: list[tuple[int, int]] = []
+    start = 0
+
+    while start < len(tokens):
+        upper = min(len(tokens), start + max_window_items)
+        low = start + 1
+        best_end = start + 1
+
+        while low <= upper:
+            mid = (low + upper) // 2
+            if count_fn(tokens[start:mid]) <= max_items:
+                best_end = mid
+                low = mid + 1
+            else:
+                upper = mid - 1
+
+        windows.append((start, best_end))
+        if best_end >= len(tokens):
+            break
+
+        next_start = max(best_end - normalized_overlap, start + 1)
+        start = next_start
+
+    return windows
+
+
+def _encode_transformer_window(
+    tokenizer: AutoTokenizer,
+    tokens: list[str],
+    max_length: int = 512,
+    definition_prompting: bool = False,
+) -> dict[str, object]:
+    if definition_prompting:
+        def_tokens = tokenizer.tokenize(ENTITY_DEFINITION_PREFIX)
+        text_encoding = tokenizer(
+            tokens,
+            is_split_into_words=True,
+            truncation=True,
+            max_length=max_length - len(def_tokens) - 2,
+            add_special_tokens=False,
+        )
+
+        def_input_ids = tokenizer.convert_tokens_to_ids(def_tokens)
+        cls_id = tokenizer.cls_token_id or tokenizer.bos_token_id
+        sep_id = tokenizer.sep_token_id or tokenizer.eos_token_id
+
+        input_ids = [cls_id] + def_input_ids + [sep_id] + text_encoding["input_ids"] + [sep_id]
+        def_len = 1 + len(def_input_ids) + 1
+        pad_len = max_length - len(input_ids)
+
+        input_ids = input_ids + [tokenizer.pad_token_id or 0] * pad_len
+        attention_mask = [1] * (max_length - pad_len) + [0] * pad_len
+        word_ids = [None] * def_len + text_encoding.word_ids(batch_index=0) + [None] * (1 + pad_len)
+
+        return {
+            "input_ids": torch.tensor(input_ids[:max_length], dtype=torch.long),
+            "attention_mask": torch.tensor(attention_mask[:max_length], dtype=torch.long),
+            "word_ids": word_ids[:max_length],
+        }
+
+    encoding = tokenizer(
+        tokens,
+        is_split_into_words=True,
+        truncation=True,
+        max_length=max_length,
+        padding="max_length",
+        return_tensors="pt",
+    )
+    return {
+        "input_ids": encoding["input_ids"].squeeze(0),
+        "attention_mask": encoding["attention_mask"].squeeze(0),
+        "word_ids": encoding.word_ids(batch_index=0),
+    }
+
+
+def _average_window_probabilities(
+    num_tokens: int,
+    window_probabilities: list[tuple[int, int, np.ndarray]],
+) -> np.ndarray:
+    averaged = np.zeros((num_tokens, NUM_LABELS), dtype=np.float32)
+    counts = np.zeros((num_tokens, 1), dtype=np.float32)
+
+    for start, end, probs in window_probabilities:
+        averaged[start:end] += probs
+        counts[start:end] += 1.0
+
+    covered = counts.squeeze(-1) > 0
+    averaged[covered] /= counts[covered]
+    averaged[~covered, LABEL2ID["O"]] = 1.0
+    return averaged
+
+
+def _load_transformer_model_for_inference(
+    checkpoint_path: str | Path,
+    model_type: str,
+    model_name: str,
+    device: str,
+    metadata: dict[str, object] | None = None,
+):
+    metadata = metadata or {}
+    model_cls = MODEL_TYPES[model_type]
+    if model_type == "deberta_crf":
+        model = model_cls(
+            model_name=model_name,
+            num_labels=NUM_LABELS,
+            use_lstm=bool(metadata.get("use_lstm", False)),
+        )
+    else:
+        model = model_cls(model_name=model_name, num_labels=NUM_LABELS)
+
+    model.load_state_dict(torch.load(Path(checkpoint_path).resolve(), map_location="cpu"))
+    model = model.to(device)
+    model.eval()
+    return model
+
+
+def _predict_transformer_sample_probs(
+    model,
+    tokenizer: AutoTokenizer,
+    prepared: dict[str, object],
+    device: str,
+    batch_size: int,
+    max_length: int = 512,
+    definition_prompting: bool = False,
+    window_overlap: int | None = None,
+    window_size: int | None = None,
+) -> np.ndarray:
+    original_tokens = list(prepared["original_tokens"])
+    model_tokens = list(prepared["model_tokens"])
+    kept_indices = list(prepared["kept_indices"])
+
+    if not model_tokens:
+        return _restore_word_probabilities(len(original_tokens), kept_indices, np.zeros((0, NUM_LABELS), dtype=np.float32))
+
+    overlap = _normalize_window_overlap(window_overlap)
+    windows = _split_token_windows(
+        model_tokens,
+        max_items=max_length,
+        overlap=overlap,
+        count_fn=lambda chunk: _count_transformer_input_tokens(tokenizer, chunk, definition_prompting),
+        window_size=window_size,
+    )
+
+    window_records: list[dict[str, object]] = []
+    for start, end in windows:
+        encoding = _encode_transformer_window(
+            tokenizer,
+            model_tokens[start:end],
+            max_length=max_length,
+            definition_prompting=definition_prompting,
+        )
+        window_records.append(
+            {
+                "start": start,
+                "end": end,
+                "num_words": end - start,
+                **encoding,
+            }
+        )
+
+    window_probabilities: list[tuple[int, int, np.ndarray]] = []
+    with torch.no_grad():
+        for batch_start in range(0, len(window_records), batch_size):
+            batch_records = window_records[batch_start : batch_start + batch_size]
+            input_ids = torch.stack([record["input_ids"] for record in batch_records]).to(device)
+            attention_mask = torch.stack([record["attention_mask"] for record in batch_records]).to(device)
+            outputs = model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+            )
+            token_scores = outputs["logits"].detach().cpu().float().numpy()
+
+            for batch_index, record in enumerate(batch_records):
+                word_scores = _first_subword_scores(
+                    token_scores[batch_index],
+                    list(record["word_ids"]),
+                    int(record["num_words"]),
+                )
+                window_probabilities.append(
+                    (
+                        int(record["start"]),
+                        int(record["end"]),
+                        _softmax(word_scores),
+                    )
+                )
+
+    word_probabilities = _average_window_probabilities(len(model_tokens), window_probabilities)
+    return _restore_word_probabilities(len(original_tokens), kept_indices, word_probabilities)
+
+
+def _predict_bilstm_sample_probs(
+    model,
+    word2idx: dict[str, int],
+    prepared: dict[str, object],
+    device: str,
+    batch_size: int,
+    max_length: int = 256,
+    window_overlap: int | None = None,
+    window_size: int | None = None,
+) -> np.ndarray:
+    original_tokens = list(prepared["original_tokens"])
+    model_tokens = list(prepared["model_tokens"])
+    kept_indices = list(prepared["kept_indices"])
+
+    if not model_tokens:
+        return _restore_word_probabilities(len(original_tokens), kept_indices, np.zeros((0, NUM_LABELS), dtype=np.float32))
+
+    overlap = _normalize_window_overlap(window_overlap)
+    windows = _split_token_windows(
+        model_tokens,
+        max_items=max_length,
+        overlap=overlap,
+        count_fn=len,
+        window_size=window_size,
+    )
+
+    window_records: list[dict[str, object]] = []
+    for start, end in windows:
+        window_tokens = model_tokens[start:end]
+        token_ids = [word2idx.get(token.lower(), word2idx.get("<UNK>", 1)) for token in window_tokens]
+        padded_ids = token_ids + [0] * max(0, max_length - len(token_ids))
+        window_records.append(
+            {
+                "start": start,
+                "end": end,
+                "length": len(window_tokens),
+                "input_ids": torch.tensor(padded_ids[:max_length], dtype=torch.long),
+            }
+        )
+
+    window_probabilities: list[tuple[int, int, np.ndarray]] = []
+    with torch.no_grad():
+        for batch_start in range(0, len(window_records), batch_size):
+            batch_records = window_records[batch_start : batch_start + batch_size]
+            input_ids = torch.stack([record["input_ids"] for record in batch_records]).to(device)
+            outputs = model(input_ids)
+            emissions = outputs["emissions"].detach().cpu().float().numpy()
+
+            for batch_index, record in enumerate(batch_records):
+                length = int(record["length"])
+                window_probabilities.append(
+                    (
+                        int(record["start"]),
+                        int(record["end"]),
+                        _softmax(emissions[batch_index][:length]),
+                    )
+                )
+
+    word_probabilities = _average_window_probabilities(len(model_tokens), window_probabilities)
+    return _restore_word_probabilities(len(original_tokens), kept_indices, word_probabilities)
+
+
+def _entities_to_token_spans(tokens: list[str], entities: list[dict[str, object]]) -> list[tuple[int, int, str, float]]:
+    char_to_token: dict[int, int] = {}
+    char_pos = 0
+    for token_index, token in enumerate(tokens):
+        for _ in token:
+            char_to_token[char_pos] = token_index
+            char_pos += 1
+        char_to_token[char_pos] = token_index
+        char_pos += 1
+
+    spans: list[tuple[int, int, str, float]] = []
+    for entity in entities:
+        label = str(entity.get("label", ""))
+        if label not in {"ClinicalImpacts", "SocialImpacts"}:
+            continue
+
+        start_char = int(entity.get("start", -1))
+        end_char = int(entity.get("end", -1))
+        start_token = char_to_token.get(start_char)
+        end_token = char_to_token.get(end_char - 1)
+        if start_token is None or end_token is None or start_token > end_token:
+            continue
+
+        spans.append((start_token, end_token, label, float(entity.get("score", 0.0))))
+
+    return spans
+
+
+def _render_scored_token_spans(num_tokens: int, spans: list[tuple[int, int, str, float]]) -> list[str]:
+    deduped: dict[tuple[int, int, str], float] = {}
+    for start, end, label, score in spans:
+        key = (start, end, label)
+        deduped[key] = max(score, deduped.get(key, float("-inf")))
+
+    occupied = [False] * num_tokens
+    tags = ["O"] * num_tokens
+    ranked_spans = sorted(
+        [(start, end, label, score) for (start, end, label), score in deduped.items()],
+        key=lambda item: (-item[3], item[0], item[1], item[2]),
+    )
+
+    for start, end, label, _ in ranked_spans:
+        if start < 0 or end >= num_tokens or start > end:
+            continue
+        if any(occupied[position] for position in range(start, end + 1)):
+            continue
+
+        tags[start] = f"B-{label}"
+        for position in range(start + 1, end + 1):
+            tags[position] = f"I-{label}"
+        for position in range(start, end + 1):
+            occupied[position] = True
+
+    return apply_bio_repair(tags)
+
+
+def _predict_gliner_sample_tags(
+    model,
+    prepared: dict[str, object],
+    threshold: float,
+    window_overlap: int | None = None,
+    window_size: int | None = None,
+) -> list[str]:
+    original_tokens = list(prepared["original_tokens"])
+    model_tokens = list(prepared["model_tokens"])
+    kept_indices = list(prepared["kept_indices"])
+
+    if not model_tokens:
+        return restore_forced_o_predictions(original_tokens, kept_indices, [])
+
+    from .gliner_finetune import ENTITY_LABELS
+
+    max_length = int(getattr(model.config, "max_len", 384))
+    overlap = _normalize_window_overlap(window_overlap)
+    windows = _split_token_windows(
+        model_tokens,
+        max_items=max_length,
+        overlap=overlap,
+        count_fn=len,
+        window_size=window_size,
+    )
+
+    merged_spans: list[tuple[int, int, str, float]] = []
+    for start, end in windows:
+        try:
+            window_entities = model.predict_entities(
+                " ".join(model_tokens[start:end]),
+                ENTITY_LABELS,
+                threshold=threshold,
+            )
+        except Exception:
+            window_entities = []
+
+        for local_start, local_end, label, score in _entities_to_token_spans(model_tokens[start:end], window_entities):
+            merged_spans.append((start + local_start, start + local_end, label, score))
+
+    cleaned_predictions = _render_scored_token_spans(len(model_tokens), merged_spans)
+    return restore_forced_o_predictions(
+        original_tokens,
+        kept_indices,
+        cleaned_predictions,
+    )
+
+
+def _predict_sentence_labels_with_windowing(
+    model,
+    tokenizer: AutoTokenizer,
+    rows: list[dict[str, object]],
+    batch_size: int,
+    device: str,
+    threshold: float,
+    enable_preprocessing: bool = False,
+    max_length: int = 512,
+    window_overlap: int | None = None,
+    window_size: int | None = None,
+) -> np.ndarray:
+    overlap = _normalize_window_overlap(window_overlap)
+    all_predictions: list[np.ndarray] = []
+
+    with torch.no_grad():
+        for row in rows:
+            prepared = _prepare_inference_tokens(
+                list(row["tokens"]),
+                enable_preprocessing=enable_preprocessing,
+            )
+            model_tokens = list(prepared["model_tokens"])
+            if not model_tokens:
+                all_predictions.append(np.zeros(2, dtype=np.int64))
+                continue
+
+            windows = _split_token_windows(
+                model_tokens,
+                max_items=max_length,
+                overlap=overlap,
+                count_fn=lambda chunk: _count_transformer_input_tokens(tokenizer, chunk, False),
+                window_size=window_size,
+            )
+            window_records = [
+                _encode_transformer_window(tokenizer, model_tokens[start:end], max_length=max_length)
+                for start, end in windows
+            ]
+
+            sentence_probs = np.zeros(2, dtype=np.float32)
+            for batch_start in range(0, len(window_records), batch_size):
+                batch_records = window_records[batch_start : batch_start + batch_size]
+                input_ids = torch.stack([record["input_ids"] for record in batch_records]).to(device)
+                attention_mask = torch.stack([record["attention_mask"] for record in batch_records]).to(device)
+                outputs = model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                )
+                probs = torch.sigmoid(outputs["logits"]).detach().cpu().numpy()
+                sentence_probs = np.maximum(sentence_probs, probs.max(axis=0))
+
+            all_predictions.append((sentence_probs >= threshold).astype(np.int64))
+
+    return np.stack(all_predictions) if all_predictions else np.zeros((0, 2), dtype=np.int64)
+
+
 def _decode_dataset_predictions(dataset: InferenceNERDataset, batch_predictions: list[torch.Tensor]) -> list[list[str]]:
     """Map model token predictions back to word-level BIO tags."""
 
@@ -584,6 +1036,8 @@ def _collect_transformer_test_probs(
     batch_size: int,
     device: str,
     enable_preprocessing: bool = False,
+    window_overlap: int | None = None,
+    window_size: int | None = None,
 ) -> list[np.ndarray]:
     model_type = str(candidate["model_type"])
     model_name = str(candidate.get("model_name") or "microsoft/deberta-v3-large")
@@ -591,53 +1045,33 @@ def _collect_transformer_test_probs(
     definition_prompting = bool(metadata.get("definition_prompting", False))
 
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-    dataset = InferenceNERDataset(
-        rows,
-        tokenizer,
-        definition_prompting=definition_prompting,
-        enable_preprocessing=enable_preprocessing,
+    model = _load_transformer_model_for_inference(
+        checkpoint_path=str(candidate["path"]),
+        model_type=model_type,
+        model_name=model_name,
+        device=device,
+        metadata=metadata,
     )
-    dataloader = DataLoader(dataset, batch_size=batch_size)
-
-    model_cls = MODEL_TYPES[model_type]
-    if model_type == "deberta_crf":
-        model = model_cls(
-            model_name=model_name,
-            num_labels=NUM_LABELS,
-            use_lstm=bool(metadata.get("use_lstm", False)),
-        )
-    else:
-        model = model_cls(model_name=model_name, num_labels=NUM_LABELS)
-    model.load_state_dict(torch.load(Path(str(candidate["path"])).resolve(), map_location="cpu"))
-    model = model.to(device)
-    model.eval()
 
     all_probs: list[np.ndarray] = []
-    sample_index = 0
-    with torch.no_grad():
-        for batch in dataloader:
-            batch_device = {key: value.to(device) for key, value in batch.items()}
-            outputs = model(
-                input_ids=batch_device["input_ids"],
-                attention_mask=batch_device["attention_mask"],
+    for row in rows:
+        prepared = _prepare_inference_tokens(
+            list(row["tokens"]),
+            enable_preprocessing=enable_preprocessing,
+        )
+        all_probs.append(
+            _predict_transformer_sample_probs(
+                model,
+                tokenizer,
+                prepared,
+                device=device,
+                batch_size=batch_size,
+                max_length=512,
+                definition_prompting=definition_prompting,
+                window_overlap=window_overlap,
+                window_size=window_size,
             )
-            token_scores = outputs["logits"].detach().cpu().float().numpy()
-
-            for batch_index in range(token_scores.shape[0]):
-                sample = dataset.get_full_sample(sample_index)
-                word_scores = _first_subword_scores(
-                    token_scores[batch_index],
-                    sample["word_ids"],
-                    len(sample["kept_indices"]),
-                )
-                all_probs.append(
-                    _restore_word_probabilities(
-                        len(sample["raw_tokens"]),
-                        sample["kept_indices"],
-                        _softmax(word_scores),
-                    )
-                )
-                sample_index += 1
+        )
 
     del model
     if torch.cuda.is_available():
@@ -653,6 +1087,8 @@ def _collect_bilstm_test_probs(
     data_dir: str | Path,
     glove_path: str | Path,
     enable_preprocessing: bool = False,
+    window_overlap: int | None = None,
+    window_size: int | None = None,
 ) -> list[np.ndarray]:
     train_rows = load_training_rows(
         Path(data_dir).resolve() / "new_train_data.csv",
@@ -660,8 +1096,6 @@ def _collect_bilstm_test_probs(
     )
     word2idx = build_vocab(train_rows)
     embeddings = load_glove_embeddings(glove_path, word2idx, dim=300)
-    dataset = InferenceBiLSTMDataset(rows, word2idx, enable_preprocessing=enable_preprocessing)
-    dataloader = DataLoader(dataset, batch_size=batch_size)
 
     model = BiLSTMCRF(
         vocab_size=len(word2idx),
@@ -677,24 +1111,23 @@ def _collect_bilstm_test_probs(
     model.eval()
 
     all_probs: list[np.ndarray] = []
-    sample_index = 0
-    with torch.no_grad():
-        for batch in dataloader:
-            outputs = model(batch["input_ids"].to(device))
-            emissions = outputs["emissions"].detach().cpu().float().numpy()
-            lengths = batch["length"].cpu().numpy()
-
-            for batch_index in range(emissions.shape[0]):
-                sample = dataset.samples[sample_index]
-                length = min(int(lengths[batch_index]), len(sample["model_tokens"]))
-                all_probs.append(
-                    _restore_word_probabilities(
-                        len(sample["raw_tokens"]),
-                        sample["kept_indices"],
-                        _softmax(emissions[batch_index][:length]),
-                    )
-                )
-                sample_index += 1
+    for row in rows:
+        prepared = _prepare_inference_tokens(
+            list(row["tokens"]),
+            enable_preprocessing=enable_preprocessing,
+        )
+        all_probs.append(
+            _predict_bilstm_sample_probs(
+                model,
+                word2idx,
+                prepared,
+                device=device,
+                batch_size=batch_size,
+                max_length=256,
+                window_overlap=window_overlap,
+                window_size=window_size,
+            )
+        )
 
     del model
     if torch.cuda.is_available():
@@ -731,12 +1164,12 @@ def _collect_hierarchical_test_predictions(
     batch_size: int,
     device: str,
     enable_preprocessing: bool = False,
+    window_overlap: int | None = None,
+    window_size: int | None = None,
 ) -> list[list[str]]:
     from .hierarchical import (
-        _load_ner_model,
         _load_sentence_classifier,
         _mask_predicted_tags,
-        _predict_ner_subset,
     )
 
     model_name = str(candidate.get("model_name") or "microsoft/deberta-v3-large")
@@ -746,38 +1179,57 @@ def _collect_hierarchical_test_predictions(
     ner_checkpoint = Path(str(metadata["ner_checkpoint"])).resolve()
 
     sentence_tokenizer = AutoTokenizer.from_pretrained(model_name)
-    sentence_dataset = InferenceSentenceDataset(
-        rows,
-        sentence_tokenizer,
-        enable_preprocessing=enable_preprocessing,
-    )
     classifier_model = _load_sentence_classifier(classifier_checkpoint, model_name, device)
-    sentence_preds = _predict_sentence_labels_inference(
+    sentence_preds = _predict_sentence_labels_with_windowing(
         classifier_model,
-        sentence_dataset,
+        sentence_tokenizer,
+        rows,
         batch_size=batch_size,
         device=device,
         threshold=threshold,
+        enable_preprocessing=enable_preprocessing,
+        window_overlap=window_overlap,
+        window_size=window_size,
     )
 
-    ner_tokenizer = AutoTokenizer.from_pretrained(model_name)
-    ner_dataset = InferenceNERDataset(
-        rows,
-        ner_tokenizer,
-        enable_preprocessing=enable_preprocessing,
-    )
-    all_predictions = [["O"] * len(sample["raw_tokens"]) for sample in ner_dataset.samples]
+    prepared_rows = [
+        _prepare_inference_tokens(
+            list(row["tokens"]),
+            enable_preprocessing=enable_preprocessing,
+        )
+        for row in rows
+    ]
+    all_predictions = [["O"] * len(prepared["original_tokens"]) for prepared in prepared_rows]
 
     positive_indices = [
         index
         for index, pred in enumerate(sentence_preds)
-        if int(pred.sum()) > 0 and ner_dataset.samples[index]["kept_indices"]
+        if int(pred.sum()) > 0 and prepared_rows[index]["kept_indices"]
     ]
     if positive_indices:
-        ner_model = _load_ner_model(ner_checkpoint, model_name, device, use_multitask=True)
-        ner_predictions = _predict_ner_subset(ner_model, ner_dataset, positive_indices, batch_size, device)
+        ner_model = _load_transformer_model_for_inference(
+            checkpoint_path=ner_checkpoint,
+            model_type="deberta_multitask",
+            model_name=model_name,
+            device=device,
+        )
+        ner_tokenizer = AutoTokenizer.from_pretrained(model_name)
         for sample_index in positive_indices:
-            sample_pred = ner_predictions.get(sample_index, all_predictions[sample_index])
+            sample_pred = _decode_single_candidate_probs(
+                [
+                    _predict_transformer_sample_probs(
+                        ner_model,
+                        ner_tokenizer,
+                        prepared_rows[sample_index],
+                        device=device,
+                        batch_size=batch_size,
+                        max_length=512,
+                        definition_prompting=False,
+                        window_overlap=window_overlap,
+                        window_size=window_size,
+                    )
+                ]
+            )[0]
             allow_clinical = bool(sentence_preds[sample_index][0])
             allow_social = bool(sentence_preds[sample_index][1])
             all_predictions[sample_index] = _mask_predicted_tags(sample_pred, allow_clinical, allow_social)
@@ -801,28 +1253,43 @@ def _resolve_ensemble_selection(
     if selection_metric not in {"relaxed_f1", "strict_f1"}:
         raise ValueError("selection_metric must be either 'relaxed_f1' or 'strict_f1'.")
 
-    all_results = search_results.get("all_results", [])
-    if not all_results:
-        raise ValueError(f"No all_results entries found in {results_path}.")
-
     if best_size is None:
-        candidates = all_results
         selection_name = f"best_overall_by_{selection_metric}"
+        saved_selection = search_results.get(selection_name)
+        if saved_selection is not None:
+            selection = dict(saved_selection)
+        else:
+            all_results = search_results.get("all_results", [])
+            if not all_results:
+                raise ValueError(f"No all_results entries found in {results_path}.")
+            selection = dict(
+                max(
+                    all_results,
+                    key=lambda record: float(record.get(selection_metric, float("-inf"))),
+                )
+            )
     else:
         target_size = int(best_size)
-        candidates = [record for record in all_results if int(record.get("num_models", -1)) == target_size]
         selection_name = f"best_size_{target_size}_by_{selection_metric}"
-        if not candidates:
-            raise ValueError(
-                f"No ensemble combinations of size {target_size} were found in {results_path}."
+        saved_by_size = search_results.get(f"best_by_size_by_{selection_metric}", {})
+        saved_selection = saved_by_size.get(str(target_size))
+        if saved_selection is not None:
+            selection = dict(saved_selection)
+        else:
+            all_results = search_results.get("all_results", [])
+            if not all_results:
+                raise ValueError(f"No all_results entries found in {results_path}.")
+            candidates = [record for record in all_results if int(record.get("num_models", -1)) == target_size]
+            if not candidates:
+                raise ValueError(
+                    f"No ensemble combinations of size {target_size} were found in {results_path}."
+                )
+            selection = dict(
+                max(
+                    candidates,
+                    key=lambda record: float(record.get(selection_metric, float("-inf"))),
+                )
             )
-
-    selection = dict(
-        max(
-            candidates,
-            key=lambda record: float(record.get(selection_metric, float("-inf"))),
-        )
-    )
 
     candidates_by_name = {
         candidate["name"]: candidate
@@ -860,6 +1327,8 @@ def predict_transformer_ner(
     device: str = "cuda:0",
     definition_prompting: bool = False,
     enable_preprocessing: bool = False,
+    window_overlap: int | None = None,
+    window_size: int | None = None,
 ) -> dict[str, str | int]:
     """Run a saved transformer NER checkpoint on a CSV and write sample-submission output."""
 
@@ -882,39 +1351,43 @@ def predict_transformer_ner(
     print(f"  Model name: {model_name}")
     print(f"  Device: {device}")
     print(f"  Output CSV: {output_path}")
+    print(f"  Long-window overlap: {_normalize_window_overlap(window_overlap)}")
+    if window_size is not None:
+        print(f"  Long-window size cap: {window_size}")
     print("=" * 60 + "\n")
 
     rows = load_inference_rows(input_path)
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-    dataset = InferenceNERDataset(
-        rows,
-        tokenizer,
-        definition_prompting=definition_prompting,
-        enable_preprocessing=enable_preprocessing,
+    model = _load_transformer_model_for_inference(
+        checkpoint_path=checkpoint,
+        model_type=model_type,
+        model_name=model_name,
+        device=device,
+        metadata={"use_lstm": False},
     )
-    dataloader = DataLoader(dataset, batch_size=batch_size)
-
-    model_cls = MODEL_TYPES[model_type]
-    model = model_cls(model_name=model_name, num_labels=NUM_LABELS)
-    state = torch.load(checkpoint, map_location=device)
-    model.load_state_dict(state)
-    model = model.to(device)
-    model.eval()
-
-    batch_predictions: list[torch.Tensor] = []
-    with torch.no_grad():
-        for batch in dataloader:
-            batch_device = {key: value.to(device) for key, value in batch.items()}
-            outputs = model(
-                input_ids=batch_device["input_ids"],
-                attention_mask=batch_device["attention_mask"],
+    decoded_predictions = _decode_single_candidate_probs(
+        [
+            _predict_transformer_sample_probs(
+                model,
+                tokenizer,
+                _prepare_inference_tokens(
+                    list(row["tokens"]),
+                    enable_preprocessing=enable_preprocessing,
+                ),
+                device=device,
+                batch_size=batch_size,
+                max_length=512,
+                definition_prompting=definition_prompting,
+                window_overlap=window_overlap,
+                window_size=window_size,
             )
-            if "predictions" in outputs:
-                batch_predictions.append(outputs["predictions"].detach().cpu())
-            else:
-                batch_predictions.append(outputs["logits"].argmax(dim=-1).detach().cpu())
+            for row in rows
+        ]
+    )
+    del model
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
-    decoded_predictions = _decode_dataset_predictions(dataset, batch_predictions)
     output_path = write_submission(output_path, [str(row["ID"]) for row in rows], decoded_predictions)
     print(f"Saved predictions to {output_path}")
     return {
@@ -934,6 +1407,8 @@ def predict_bilstm_crf(
     batch_size: int = 32,
     device: str = "cuda:0",
     enable_preprocessing: bool = False,
+    window_overlap: int | None = None,
+    window_size: int | None = None,
 ) -> dict[str, str | int]:
     """Run a saved BiLSTM-CRF checkpoint on a CSV and write sample-submission output."""
 
@@ -951,8 +1426,6 @@ def predict_bilstm_crf(
     embeddings = load_glove_embeddings(glove_path, word2idx, dim=300)
 
     rows = load_inference_rows(input_path)
-    dataset = InferenceBiLSTMDataset(rows, word2idx, enable_preprocessing=enable_preprocessing)
-    dataloader = DataLoader(dataset, batch_size=batch_size)
 
     model = BiLSTMCRF(
         vocab_size=len(word2idx),
@@ -967,25 +1440,27 @@ def predict_bilstm_crf(
     model = model.to(device)
     model.eval()
 
-    decoded_predictions: list[list[str]] = []
-    sample_index = 0
-    with torch.no_grad():
-        for batch in dataloader:
-            outputs = model(batch["input_ids"].to(device))
-            preds = outputs["predictions"].detach().cpu().numpy()
-            for batch_index in range(preds.shape[0]):
-                if sample_index >= len(dataset.samples):
-                    break
-                sample = dataset.samples[sample_index]
-                seq_len = min(len(sample["model_tokens"]), preds.shape[1])
-                cleaned_pred_tags = [ID2LABEL[int(tag_id)] for tag_id in preds[batch_index][:seq_len]]
-                pred_tags = restore_forced_o_predictions(
-                    sample["raw_tokens"],
-                    sample["kept_indices"],
-                    cleaned_pred_tags,
-                )
-                decoded_predictions.append(fix_bio_tags(pred_tags))
-                sample_index += 1
+    decoded_predictions = _decode_single_candidate_probs(
+        [
+            _predict_bilstm_sample_probs(
+                model,
+                word2idx,
+                _prepare_inference_tokens(
+                    list(row["tokens"]),
+                    enable_preprocessing=enable_preprocessing,
+                ),
+                device=device,
+                batch_size=batch_size,
+                max_length=256,
+                window_overlap=window_overlap,
+                window_size=window_size,
+            )
+            for row in rows
+        ]
+    )
+    del model
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     output_path = write_submission(output_path, [str(row["ID"]) for row in rows], decoded_predictions)
     print(f"Saved predictions to {output_path}")
@@ -1008,6 +1483,8 @@ def predict_ensemble_from_search_results(
     data_dir: str | Path = ".",
     glove_path: str | Path = "glove.6B.300d.txt",
     enable_preprocessing: bool = False,
+    window_overlap: int | None = None,
+    window_size: int | None = None,
 ) -> dict[str, str | int | float | list[str]]:
     """Run a saved ensemble-search selection on a CSV and write sample-submission output."""
 
@@ -1049,6 +1526,8 @@ def predict_ensemble_from_search_results(
                 batch_size=batch_size,
                 device=device,
                 enable_preprocessing=enable_preprocessing,
+                window_overlap=window_overlap,
+                window_size=window_size,
             )
         elif model_type == "bilstm_crf":
             probs = _collect_bilstm_test_probs(
@@ -1059,6 +1538,8 @@ def predict_ensemble_from_search_results(
                 data_dir=data_dir,
                 glove_path=glove_path,
                 enable_preprocessing=enable_preprocessing,
+                window_overlap=window_overlap,
+                window_size=window_size,
             )
             if vote_method == "probability_average":
                 candidate_probabilities[str(candidate["name"])] = probs
@@ -1071,6 +1552,8 @@ def predict_ensemble_from_search_results(
                 batch_size=batch_size,
                 device=device,
                 enable_preprocessing=enable_preprocessing,
+                window_overlap=window_overlap,
+                window_size=window_size,
             )
             if vote_method == "probability_average":
                 candidate_probabilities[str(candidate["name"])] = probs
@@ -1112,6 +1595,8 @@ def predict_gliner_ner(
     device: str = "cuda:0",
     metrics_output: str | Path | None = None,
     enable_preprocessing: bool = False,
+    window_overlap: int | None = None,
+    window_size: int | None = None,
 ) -> dict[str, object]:
     """Run a fine-tuned GLiNER model on a CSV and optionally score it when gold tags are present."""
 
@@ -1120,7 +1605,6 @@ def predict_gliner_ner(
     except ImportError as exc:
         raise RuntimeError("gliner is not installed in the active environment.") from exc
 
-    from .gliner_finetune import ENTITY_LABELS, _entities_to_bio
     from .evaluation import evaluate_ner
 
     input_path = Path(input_csv).resolve()
@@ -1147,6 +1631,9 @@ def predict_gliner_ner(
     print(f"  Threshold: {threshold}")
     print(f"  Device: {device}")
     print(f"  Output CSV: {output_path}")
+    print(f"  Long-window overlap: {_normalize_window_overlap(window_overlap)}")
+    if window_size is not None:
+        print(f"  Long-window size cap: {window_size}")
     print("=" * 60 + "\n")
 
     for row in rows:
@@ -1154,25 +1641,14 @@ def predict_gliner_ner(
             list(row["tokens"]),
             enable_preprocessing=enable_preprocessing,
         )
-        original_tokens = list(prepared["original_tokens"])
-        model_tokens = list(prepared["model_tokens"])
-        kept_indices = list(prepared["kept_indices"])
-
         ids.append(str(row["ID"]))
-        if model_tokens:
-            try:
-                entities = model.predict_entities(" ".join(model_tokens), ENTITY_LABELS, threshold=threshold)
-            except Exception:
-                entities = []
-            cleaned_predictions = _entities_to_bio(model_tokens, entities)
-        else:
-            cleaned_predictions = []
-
         predictions.append(
-            restore_forced_o_predictions(
-                original_tokens,
-                kept_indices,
-                cleaned_predictions,
+            _predict_gliner_sample_tags(
+                model,
+                prepared,
+                threshold=threshold,
+                window_overlap=window_overlap,
+                window_size=window_size,
             )
         )
 

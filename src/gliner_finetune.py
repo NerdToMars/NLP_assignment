@@ -221,8 +221,18 @@ def _entities_to_bio(tokens, entities):
 
 # ── Evaluation ────────────────────────────────────────────────────────────────
 
-def evaluate_gliner(model, dev_df, device, threshold=0.4, print_report=True):
+def evaluate_gliner(
+    model,
+    dev_df,
+    device,
+    threshold=0.4,
+    print_report=True,
+    window_overlap: int | None = None,
+    window_size: int | None = None,
+):
     """Evaluate a GLiNER model on the dev set and return metrics."""
+    from .predict import _predict_gliner_sample_tags, _prepare_inference_tokens
+
     model.to(device)
     all_gold, all_pred = [], []
 
@@ -230,13 +240,16 @@ def evaluate_gliner(model, dev_df, device, threshold=0.4, print_report=True):
         tokens = row["tokens"] if isinstance(row["tokens"], list) else eval(row["tokens"])
         gold   = row["ner_tags"] if isinstance(row["ner_tags"], list) else eval(row["ner_tags"])
         all_gold.append(gold)
-
-        try:
-            entities = model.predict_entities(" ".join(tokens), ENTITY_LABELS, threshold=threshold)
-        except Exception:
-            entities = []
-
-        all_pred.append(_entities_to_bio(tokens, entities))
+        prepared = _prepare_inference_tokens(tokens, enable_preprocessing=False)
+        all_pred.append(
+            _predict_gliner_sample_tags(
+                model,
+                prepared,
+                threshold=threshold,
+                window_overlap=window_overlap,
+                window_size=window_size,
+            )
+        )
 
     return evaluate_ner(all_gold, all_pred, print_report=print_report)
 
@@ -467,6 +480,8 @@ def run_gliner_inference(
     experiment_name="gliner_inference",
     data_dir=str(DEFAULT_DATA_DIR),
     output_dir=str(DEFAULT_OUTPUT_DIR),
+    window_overlap: int | None = None,
+    window_size: int | None = None,
 ):
     """Load the fine-tuned GLiNER checkpoint and evaluate on dev."""
     try:
@@ -498,7 +513,15 @@ def run_gliner_inference(
     model = GLiNER.from_pretrained(str(model_dir))
     model = model.to(device)
 
-    dev_results = evaluate_gliner(model, dev_df, device, threshold=threshold, print_report=True)
+    dev_results = evaluate_gliner(
+        model,
+        dev_df,
+        device,
+        threshold=threshold,
+        print_report=True,
+        window_overlap=window_overlap,
+        window_size=window_size,
+    )
 
     print(f"\nFine-tuned GLiNER dev Relaxed F1: {dev_results['relaxed_f1']:.4f}")
 
