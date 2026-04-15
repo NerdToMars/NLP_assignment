@@ -204,25 +204,34 @@
 
 % ---------- 7. Innovation 1: Focal Loss ----------
 \begin{frame}{Innovation 1: Distribution-Aware Focal Loss}
-  Focal loss with $\gamma=2.0$. Social class weight $\times 1.5$.
-  \medskip
-  \begin{center}\small
+  \textbf{Definition.} Let $p_t$ be the predicted probability of the \emph{true} class for a token.
+  Standard cross-entropy is $\text{CE}(p_t) = -\log p_t$. Focal loss adds a modulating factor:
+  \smallskip
+
+  \begin{center}
+  $\displaystyle \mathcal{L}_{\text{focal}}(p_t) \;=\; -\,\alpha_t \, (1 - p_t)^{\gamma}\,\log p_t$
+  \end{center}
+  \smallskip
+
+  \footnotesize
+  \begin{itemize}\setlength{\itemsep}{0pt}
+    \item \textbf{$(1 - p_t)^{\gamma}$ -- focusing term.} When the model is already confident ($p_t \to 1$), the factor $\to 0$, so easy tokens contribute almost nothing to the gradient. Hard tokens ($p_t$ small) keep near-full loss. We use $\gamma = 2.0$.
+    \item \textbf{$\alpha_t$ -- per-class weight.} Lets us emphasize under-represented classes. We use $\alpha_{\text{Social}} = 1.5$, $\alpha_{\text{Clinical}} = \alpha_{\text{O}} = 1.0$ to push the model toward Social (which dominates the test set).
+  \end{itemize}
+  \smallskip
+
+  \begin{center}\scriptsize
   \begin{tabular}{lcc}
     \toprule
     & Relaxed F1 & Strict F1 \\
     \midrule
     DeBERTa baseline & \textbf{0.595} & 0.409 \\
-    + Focal loss & 0.541 & 0.341 \\
+    + Focal loss ($\gamma{=}2$, $\alpha_{\text{Soc}}{=}1.5$) & 0.541 & 0.341 \\
     \bottomrule
   \end{tabular}
   \end{center}
-  \medskip
 
-  \textbf{Finding:} aggressive Social reweighting pushes the model to over-fire on
-  Social tokens. Both relaxed and strict F1 drop sharply ($-0.054$ / $-0.068$).
-
-  \medskip
-  \textcolor{neutral}{\footnotesize Lesson: distribution shift is real, but class weighting is the wrong lever for it.}
+  \footnotesize \textbf{Finding:} aggressive Social reweighting pushes the model to \emph{over}-fire on Social tokens ($-0.054$ / $-0.068$). \textcolor{neutral}{Distribution shift is real, but class weighting is the wrong lever for it.}
 \end{frame}
 
 % ---------- 8a. Innovation 2 ----------
