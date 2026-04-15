@@ -46,6 +46,7 @@ Usage:
   ./run_models.sh deberta_baseline -- --lr 1e-5 --lr 2e-5 --lr 3e-5
   ./run_models.sh deberta_baseline -- --enable-preprocessing
   ./run_models.sh deberta_baseline -- --backbone socbert
+  ./run_models.sh core -- --skip-existing
   ./run_models.sh advanced -- --early-stopping-patience 5 --early-stopping-min-delta 0.001
   ./run_models.sh hierarchical_deberta -- --device cuda:0 --threshold 0.5
   ./run_models.sh model_soup -- --source-experiment deberta_baseline_lr2em05 --checkpoint-limit 5

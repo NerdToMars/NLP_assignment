@@ -975,8 +975,8 @@ def train_sentence_token_hierarchy(
         metadata={"model_type": "sentence_token_hierarchy", "model_name": model_name},
     )
 
-    best_dev_f1 = 0.0
-    best_dev_strict_f1 = 0.0
+    best_dev_f1 = float("-inf")
+    best_dev_strict_f1 = float("-inf")
     best_checkpoint_path = output_dir_path / f"{experiment_name}_best.pt"
     results_log: list[dict[str, Any]] = []
 

@@ -257,8 +257,8 @@ def train_deberta(
     total_steps = len(train_loader) * epochs
     scheduler = get_linear_schedule_with_warmup(optimizer, int(0.1 * total_steps), total_steps)
 
-    best_dev_f1 = 0.0
-    best_dev_strict_f1 = 0.0
+    best_dev_f1 = float("-inf")
+    best_dev_strict_f1 = float("-inf")
     results_log = []
 
     for epoch in range(epochs):
@@ -460,8 +460,8 @@ def train_bilstm_crf(
     )
 
     optimizer = AdamW(model.parameters(), lr=lr)
-    best_dev_f1 = 0.0
-    best_dev_strict_f1 = 0.0
+    best_dev_f1 = float("-inf")
+    best_dev_strict_f1 = float("-inf")
     results_log = []
 
     for epoch in range(epochs):
@@ -647,8 +647,8 @@ def train_deberta_crf(
         optimizer, int(warmup_ratio * total_steps), total_steps
     )
 
-    best_dev_f1 = 0.0
-    best_dev_strict_f1 = 0.0
+    best_dev_f1 = float("-inf")
+    best_dev_strict_f1 = float("-inf")
     results_log = []
 
     for epoch in range(epochs):
@@ -870,8 +870,8 @@ def train_deberta_recall_boost(
     total_steps = (len(train_loader) // gradient_accumulation_steps) * epochs
     scheduler = get_linear_schedule_with_warmup(optimizer, int(0.1 * total_steps), total_steps)
 
-    best_dev_f1 = 0.0
-    best_dev_strict_f1 = 0.0
+    best_dev_f1 = float("-inf")
+    best_dev_strict_f1 = float("-inf")
     results_log = []
 
     for epoch in range(epochs):
@@ -1043,8 +1043,8 @@ def train_deberta_rdrop(
     total_steps = (len(train_loader) // gradient_accumulation_steps) * epochs
     scheduler = get_linear_schedule_with_warmup(optimizer, int(0.1 * total_steps), total_steps)
 
-    best_dev_f1 = 0.0
-    best_dev_strict_f1 = 0.0
+    best_dev_f1 = float("-inf")
+    best_dev_strict_f1 = float("-inf")
     results_log = []
 
     for epoch in range(epochs):
@@ -1238,8 +1238,8 @@ def train_deberta_fgm_swa(
     swa_state_dict = None
     swa_count = 0
 
-    best_dev_f1 = 0.0
-    best_dev_strict_f1 = 0.0
+    best_dev_f1 = float("-inf")
+    best_dev_strict_f1 = float("-inf")
     results_log = []
 
     for epoch in range(epochs):
