@@ -9,6 +9,7 @@ GPU1_DEVICE="cuda:1"
 OUTPUT_DIR="${SCRIPT_DIR}/outputs"
 DRY_RUN=0
 INCLUDE_EXTRA_PIPELINES=0
+SKIP_EXISTING=0
 
 MODEL_LR_VALUES=(5e-4 2e-5 5e-5)
 GLINER_LR_VALUES=(5e-6 1e-5 2e-5)
@@ -51,6 +52,7 @@ Usage:
   ./run_two_gpu_lr_sweep.sh
   ./run_two_gpu_lr_sweep.sh --dry-run
   ./run_two_gpu_lr_sweep.sh --include-extra-pipelines
+  ./run_two_gpu_lr_sweep.sh --skip-existing
   ./run_two_gpu_lr_sweep.sh --output-dir /path/to/outputs
   ./run_two_gpu_lr_sweep.sh --gpu0-device cuda:0 --gpu1-device cuda:1
   ./run_two_gpu_lr_sweep.sh --lr 5e-4 --lr 2e-5 --lr 5e-5
@@ -63,6 +65,7 @@ Behavior:
   - Launches two sequential experiment queues in parallel, one per GPU.
   - Applies one LR sweep to the main trainable presets and a separate safer LR sweep to GLiNER fine-tuning.
   - --include-extra-pipelines also adds hierarchical_deberta, sentence_token_hierarchy, and two_step_impact_pipeline.
+  - --skip-existing skips runs whose expected best checkpoint / result artifacts already exist.
   - Writes launcher logs to the output directory.
   - Excludes evaluation-only presets such as gliner, gliner_inference, and ensemble because they do not use optimizer learning rates.
 EOF
@@ -128,6 +131,10 @@ main() {
         ;;
       --include-extra-pipelines)
         INCLUDE_EXTRA_PIPELINES=1
+        shift
+        ;;
+      --skip-existing)
+        SKIP_EXISTING=1
         shift
         ;;
       --output-dir)
@@ -202,6 +209,10 @@ main() {
 
   if [[ ${DRY_RUN} -eq 1 ]]; then
     forwarded_args+=(--dry-run)
+  fi
+
+  if [[ ${SKIP_EXISTING} -eq 1 ]]; then
+    forwarded_args+=(--skip-existing)
   fi
 
   if [[ ${#forwarded_args[@]} -gt 0 ]]; then
