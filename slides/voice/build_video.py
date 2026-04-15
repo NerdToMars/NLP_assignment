@@ -31,7 +31,7 @@ FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
 
 def rasterize_pdf() -> list[Path]:
     doc = pymupdf.open(str(PDF_PATH))
-    assert doc.page_count == 18, f"expected 18 pages, got {doc.page_count}"
+    assert doc.page_count == 20, f"expected 20 pages, got {doc.page_count}"
     pngs: list[Path] = []
     for page_idx in range(doc.page_count):
         page = doc[page_idx]
