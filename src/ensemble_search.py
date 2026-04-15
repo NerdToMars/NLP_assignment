@@ -953,25 +953,30 @@ def _iter_combination_tasks(
     )
 
 
-def _score_combination_records(
+def _iter_scored_combination_records(
     tasks: tuple[tuple[int, int, tuple[str, ...]], ...],
     parallel_workers: int,
-) -> list[dict[str, Any]]:
+) -> Any:
     if not tasks:
-        return []
+        return
 
     if parallel_workers <= 1:
-        return [_score_combination_task(task) for task in tasks]
+        for task in tasks:
+            yield _score_combination_task(task)
+        return
 
     try:
         ctx = mp.get_context("fork")
     except ValueError:
         print("Parallel ensemble scoring requires fork multiprocessing on this platform. Falling back to serial scoring.")
-        return [_score_combination_task(task) for task in tasks]
+        for task in tasks:
+            yield _score_combination_task(task)
+        return
 
     chunksize = max(1, len(tasks) // max(1, parallel_workers * 4))
     with ProcessPoolExecutor(max_workers=parallel_workers, mp_context=ctx) as executor:
-        return list(executor.map(_score_combination_task, tasks, chunksize=chunksize))
+        for record in executor.map(_score_combination_task, tasks, chunksize=chunksize):
+            yield record
 
 
 def _materialize_record_predictions(
@@ -986,6 +991,37 @@ def _materialize_record_predictions(
 
     predictions = _majority_vote_predictions([candidate_predictions[name] for name in record["models"]])
     return predictions, None
+
+
+def _enrich_record_with_bootstrap(
+    record: dict[str, Any],
+    vote_method: str,
+    candidate_probs: dict[str, list[np.ndarray]],
+    candidate_predictions: dict[str, list[list[str]]],
+    gold_tags: list[list[str]],
+    bootstrap_samples: int,
+) -> dict[str, Any]:
+    predictions, probabilities = _materialize_record_predictions(
+        record,
+        vote_method,
+        candidate_probs,
+        candidate_predictions,
+    )
+    return (
+        _attach_bootstrap_from_probabilities(
+            record,
+            probabilities,
+            gold_tags,
+            bootstrap_samples,
+        )
+        if vote_method == "probability_average" and probabilities is not None
+        else _attach_bootstrap_from_predictions(
+            record,
+            predictions,
+            gold_tags,
+            bootstrap_samples,
+        )
+    )
 
 
 def run_ensemble_search(
@@ -1217,8 +1253,10 @@ def run_ensemble_search(
     print(f"\nEvaluating {total_combinations} ensemble combinations...\n")
 
     all_results: list[dict[str, Any]] = []
-    best_by_size: dict[int, dict[str, Any]] = {}
+    best_by_size_relaxed: dict[int, dict[str, Any]] = {}
+    best_by_size_strict: dict[int, dict[str, Any]] = {}
     combination_index = 0
+    next_progress_pct = 10
     combination_output_dir: Path | None = None
     if save_combination_files:
         combination_output_dir = output_dir_path / f"{experiment_name}_combinations"
@@ -1228,10 +1266,11 @@ def run_ensemble_search(
         combinations_for_size = math.comb(len(candidates), size)
         print(f"[size={size}] {combinations_for_size} combinations")
         tasks = _iter_combination_tasks(candidates, size, combination_index + 1)
-        size_records = _score_combination_records(tasks, parallel_workers=parallel_workers)
-        combination_index += len(size_records)
+        size_best_relaxed: dict[str, Any] | None = None
+        size_best_strict: dict[str, Any] | None = None
 
-        for record in size_records:
+        for record in _iter_scored_combination_records(tasks, parallel_workers=parallel_workers):
+            combination_index = record["combination_index"]
             all_results.append(record)
 
             if combination_output_dir is not None:
@@ -1243,45 +1282,73 @@ def run_ensemble_search(
                 with combination_file.open("w", encoding="utf-8") as handle:
                     json.dump(record, handle, indent=2)
 
-        best_record_for_size = max(size_records, key=lambda item: item["relaxed_f1"])
-        best_by_size[size] = best_record_for_size
+            if size_best_relaxed is None or record["relaxed_f1"] > size_best_relaxed["relaxed_f1"]:
+                size_best_relaxed = record
+            if size_best_strict is None or record["strict_f1"] > size_best_strict["strict_f1"]:
+                size_best_strict = record
+
+            while total_combinations > 0 and next_progress_pct <= 100 and combination_index * 100 >= total_combinations * next_progress_pct:
+                print(
+                    f"  Progress: {next_progress_pct}% "
+                    f"({combination_index}/{total_combinations} combinations)"
+                )
+                next_progress_pct += 10
+
+        assert size_best_relaxed is not None
+        assert size_best_strict is not None
+        best_by_size_relaxed[size] = size_best_relaxed
+        best_by_size_strict[size] = size_best_strict
         print(
-            f"  best size-{size}: F1={best_record_for_size['relaxed_f1']:.4f} | "
-            f"{', '.join(best_record_for_size['models'])}"
+            f"  best size-{size} by relaxed: F1={size_best_relaxed['relaxed_f1']:.4f} | "
+            f"{', '.join(size_best_relaxed['models'])}"
+        )
+        print(
+            f"  best size-{size} by strict: F1={size_best_strict['strict_f1']:.4f} | "
+            f"{', '.join(size_best_strict['models'])}"
         )
 
-    ranked_results = sorted(all_results, key=lambda item: item["relaxed_f1"], reverse=True)
-    best_overall = ranked_results[0]
+    ranked_results_relaxed = sorted(all_results, key=lambda item: item["relaxed_f1"], reverse=True)
+    ranked_results_strict = sorted(all_results, key=lambda item: item["strict_f1"], reverse=True)
+    best_overall_relaxed = ranked_results_relaxed[0]
+    best_overall_strict = ranked_results_strict[0]
 
-    best_by_size_json: dict[str, Any] = {}
-    for size, record in sorted(best_by_size.items()):
-        predictions, probabilities = _materialize_record_predictions(
+    best_by_size_relaxed_json: dict[str, Any] = {}
+    for size, record in sorted(best_by_size_relaxed.items()):
+        best_by_size_relaxed_json[str(size)] = _enrich_record_with_bootstrap(
             record,
             vote_method,
             candidate_probs,
             candidate_predictions,
-        )
-        best_by_size_json[str(size)] = (
-            _attach_bootstrap_from_probabilities(
-                record,
-                probabilities,
-                gold_tags,
-                bootstrap_samples,
-            )
-            if vote_method == "probability_average" and probabilities is not None
-            else _attach_bootstrap_from_predictions(
-                record,
-                predictions,
-                gold_tags,
-                bootstrap_samples,
-            )
+            gold_tags,
+            bootstrap_samples,
         )
 
-    best_overall_predictions, best_overall_probabilities = _materialize_record_predictions(
-        best_overall,
+    best_by_size_strict_json: dict[str, Any] = {}
+    for size, record in sorted(best_by_size_strict.items()):
+        best_by_size_strict_json[str(size)] = _enrich_record_with_bootstrap(
+            record,
+            vote_method,
+            candidate_probs,
+            candidate_predictions,
+            gold_tags,
+            bootstrap_samples,
+        )
+
+    best_overall_relaxed_json = _enrich_record_with_bootstrap(
+        best_overall_relaxed,
         vote_method,
         candidate_probs,
         candidate_predictions,
+        gold_tags,
+        bootstrap_samples,
+    )
+    best_overall_strict_json = _enrich_record_with_bootstrap(
+        best_overall_strict,
+        vote_method,
+        candidate_probs,
+        candidate_predictions,
+        gold_tags,
+        bootstrap_samples,
     )
 
     results = {
@@ -1305,24 +1372,18 @@ def run_ensemble_search(
             "checkpoint_limit": checkpoint_limit,
             "total_combinations": total_combinations,
         },
-        "best_overall": (
-            _attach_bootstrap_from_probabilities(
-                best_overall,
-                best_overall_probabilities,
-                gold_tags,
-                bootstrap_samples,
-            )
-            if vote_method == "probability_average" and best_overall_probabilities is not None
-            else _attach_bootstrap_from_predictions(
-                best_overall,
-                best_overall_predictions,
-                gold_tags,
-                bootstrap_samples,
-            )
-        ),
-        "best_by_size": best_by_size_json,
-        "top_results": ranked_results[:20],
-        "all_results": ranked_results,
+        "best_overall": best_overall_relaxed_json,
+        "best_overall_by_relaxed": best_overall_relaxed_json,
+        "best_overall_by_strict": best_overall_strict_json,
+        "best_by_size": best_by_size_relaxed_json,
+        "best_by_size_by_relaxed": best_by_size_relaxed_json,
+        "best_by_size_by_strict": best_by_size_strict_json,
+        "top_results": ranked_results_relaxed[:20],
+        "top_results_by_relaxed": ranked_results_relaxed[:20],
+        "top_results_by_strict": ranked_results_strict[:20],
+        "all_results": ranked_results_relaxed,
+        "all_results_by_relaxed": ranked_results_relaxed,
+        "all_results_by_strict": ranked_results_strict,
     }
     if auto_selection_summary:
         results["auto_selected_sources"] = auto_selection_summary
@@ -1335,7 +1396,9 @@ def run_ensemble_search(
         json.dump(results, handle, indent=2)
 
     print("\nBest overall ensemble:")
-    print(f"  Relaxed F1: {results['best_overall']['relaxed_f1']:.4f}")
-    print(f"  Models: {', '.join(results['best_overall']['models'])}")
+    print(f"  Best by relaxed F1: {results['best_overall_by_relaxed']['relaxed_f1']:.4f}")
+    print(f"  Models: {', '.join(results['best_overall_by_relaxed']['models'])}")
+    print(f"  Best by strict F1:  {results['best_overall_by_strict']['strict_f1']:.4f}")
+    print(f"  Models: {', '.join(results['best_overall_by_strict']['models'])}")
     print(f"\nSaved ensemble search results to {output_path}")
     return results

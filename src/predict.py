@@ -1253,28 +1253,43 @@ def _resolve_ensemble_selection(
     if selection_metric not in {"relaxed_f1", "strict_f1"}:
         raise ValueError("selection_metric must be either 'relaxed_f1' or 'strict_f1'.")
 
-    all_results = search_results.get("all_results", [])
-    if not all_results:
-        raise ValueError(f"No all_results entries found in {results_path}.")
-
     if best_size is None:
-        candidates = all_results
         selection_name = f"best_overall_by_{selection_metric}"
+        saved_selection = search_results.get(selection_name)
+        if saved_selection is not None:
+            selection = dict(saved_selection)
+        else:
+            all_results = search_results.get("all_results", [])
+            if not all_results:
+                raise ValueError(f"No all_results entries found in {results_path}.")
+            selection = dict(
+                max(
+                    all_results,
+                    key=lambda record: float(record.get(selection_metric, float("-inf"))),
+                )
+            )
     else:
         target_size = int(best_size)
-        candidates = [record for record in all_results if int(record.get("num_models", -1)) == target_size]
         selection_name = f"best_size_{target_size}_by_{selection_metric}"
-        if not candidates:
-            raise ValueError(
-                f"No ensemble combinations of size {target_size} were found in {results_path}."
+        saved_by_size = search_results.get(f"best_by_size_by_{selection_metric}", {})
+        saved_selection = saved_by_size.get(str(target_size))
+        if saved_selection is not None:
+            selection = dict(saved_selection)
+        else:
+            all_results = search_results.get("all_results", [])
+            if not all_results:
+                raise ValueError(f"No all_results entries found in {results_path}.")
+            candidates = [record for record in all_results if int(record.get("num_models", -1)) == target_size]
+            if not candidates:
+                raise ValueError(
+                    f"No ensemble combinations of size {target_size} were found in {results_path}."
+                )
+            selection = dict(
+                max(
+                    candidates,
+                    key=lambda record: float(record.get(selection_metric, float("-inf"))),
+                )
             )
-
-    selection = dict(
-        max(
-            candidates,
-            key=lambda record: float(record.get(selection_metric, float("-inf"))),
-        )
-    )
 
     candidates_by_name = {
         candidate["name"]: candidate
