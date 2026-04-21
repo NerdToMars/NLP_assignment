@@ -98,7 +98,7 @@
       \end{tabular}
       \end{center}
       \bigskip
-      \footnotesize \textcolor{neutral}{Large 20-point gap between best model and human ceiling $\Rightarrow$ lots of headroom.}
+      \footnotesize \textcolor{neutral}{Even our best dev ensemble is still about 18 points below the human ceiling $\Rightarrow$ lots of headroom.}
   \end{columns}
 \end{frame}
 
@@ -112,12 +112,47 @@
   \scriptsize \textbf{Left:} Train/Dev are Clinical-heavy; Test flips to $\approx$70\,\% Social.
   \textbf{Middle:} Social spans are longer and heavier-tailed than Clinical.
   \textbf{Right:} most Dev posts contain no entities at all.
-  \smallskip
-
-  \textbf{Preprocessing as an axis (v2 vs v5).} Every family is run twice -- \textbf{v2}\,$=$ raw text, \textbf{v5}\,$=$ mojibake repair, \texttt{@user}/URL masking, emoji/punctuation scrub, positions restored as \texttt{O} at inference. Both regimes feed the cross-version ensemble search.
 \end{frame}
 
-% ---------- 5. Models ----------
+% ---------- 5. Preprocessing ----------
+\begin{frame}{Preprocessing Technique: Raw vs preprocessed}
+  \begin{columns}[T,onlytextwidth]
+    \column{0.48\textwidth}
+      \textbf{raw runtime regime}
+      \begin{itemize}\footnotesize
+        \item Original Reddit text goes straight to tokenization.
+        \item Keeps usernames, URLs, mojibake, emoji, and punctuation noise.
+        \item Stronger lexical fidelity, but noisier token boundaries.
+      \end{itemize}
+
+      \textbf{preprocessing-enabled regime}
+      \begin{itemize}\footnotesize
+        \item Mojibake / broken-Unicode repair.
+        \item \texttt{@user} and URL masking.
+        \item Emoji / punctuation scrub before encoding.
+        \item Masked positions restored as \texttt{O} tags at inference.
+      \end{itemize}
+
+    \column{0.48\textwidth}
+      \textbf{Example}
+      \begin{center}\scriptsize
+      \begin{tabular}{p{1.6cm}p{5.4cm}}
+        \toprule
+        Raw & \texttt{@john i couldn't keep a job !!! https://...} \\
+        Preprocessed & \texttt{@USER i couldn't keep a job} \\
+        \bottomrule
+      \end{tabular}
+      \end{center}
+      \vspace{0.4em}
+
+      \footnotesize
+      \textbf{Why this matters for NER.}
+      We want less lexical noise \emph{without} breaking BIO alignment. That trade-off is mixed:
+      preprocessing helps BiLSTM and GLiNER, but the plain DeBERTa baseline is actually stronger on raw text.
+  \end{columns}
+\end{frame}
+
+% ---------- 6. Models ----------
 \begin{frame}{Model Comparison: Architectures and Backbones}
   \centering
   \begin{tikzpicture}[node distance=3mm and 4mm]
@@ -160,38 +195,59 @@
 
   \vspace{-1mm}
   \begin{center}\scriptsize
-  \begin{tabular}{lc}
+  \begin{tabular}{lcc}
     \toprule
-    Model & Dev Relaxed F1 (best LR) \\
+    Model & Raw & Prep \\
     \midrule
-    BiLSTM-CRF & 0.296 \\
-    GLiNER (fine-tuned) & 0.524 \\
-    SocBERT (Reddit-domain) & 0.404 \\
-    StressRoBERTa (mental-health) & 0.482 \\
-    DeBERTa-v3-large baseline & \textbf{0.595} \\
+    BiLSTM-CRF & 0.251 & 0.296 \\
+    GLiNER (fine-tuned) & 0.463 & 0.524 \\
+    SocBERT (Reddit-domain) & -- & 0.404 \\
+    StressRoBERTa (mental-health) & -- & 0.482 \\
+    DeBERTa-v3-large baseline & \textbf{0.595} & 0.545 \\
     \bottomrule
   \end{tabular}
   \end{center}
-  \scriptsize General-purpose DeBERTa dominates; domain-adapted encoders underperform; zero-shot GLiNER bottoms out at $0.317$ so fine-tuning is essential. Every innovation from here builds on DeBERTa.
+  \scriptsize General-purpose DeBERTa still dominates; preprocessing helps BiLSTM and GLiNER but slightly hurts the plain DeBERTa baseline on relaxed F1. Domain-adapted backbones are only evaluated in the preprocessed regime, and zero-shot GLiNER still bottoms out at $0.320$.
 \end{frame}
 
-% ---------- 6. Roadmap of Innovations ----------
+% ---------- 7. Evaluation ----------
+\begin{frame}{Evaluation Protocol Before the Innovations}
+  \begin{center}\footnotesize
+  \begin{tabular}{p{3cm}p{7.6cm}}
+    \toprule
+    Component & What we report \\
+    \midrule
+    Relaxed F1 & Correct entity type with span overlap; tolerant to boundary mismatch. \\
+    Strict F1 & Correct entity type \emph{and} exact span boundary match. \\
+    Model selection & Best learning rate is chosen per family, separately within each regime. \\
+    Comparison rule & Innovations are compared \emph{within} raw or prep first; only the later ensemble slide mixes both regimes. \\
+    Data split & All results here are dev-set results; no test labels are used. \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+  \vspace{0.3em}
+
+  \footnotesize
+  This is why the slides below show paired raw-vs-preprocessed numbers: preprocessing is treated as an experimental axis, not as an invisible implementation detail.
+\end{frame}
+
+% ---------- 8. Roadmap of Innovations ----------
 \begin{frame}{Our Strategy: Seven Contribution Buckets Beyond the Baselines}
   \footnotesize
   \begin{enumerate}\setlength{\itemsep}{0pt}
     \item \textbf{Loss/prompt/multitask ablations} -- focal loss, definition prompting, multi-task head, synthetic-data curriculum.
     \item \textbf{Advanced regularization} -- O-class downweighting (recall-boost), R-Drop, FGM $+$ SWA.
-    \item \textbf{Preprocessing as an axis} -- raw (v2) vs cleaned (v5) runtime regimes.
+    \item \textbf{Preprocessing as an axis} -- raw vs cleaned runtime regimes.
     \item \textbf{Structured prediction pipelines} -- hierarchical DeBERTa, two-step extract$\to$classify, joint sentence$+$token heads, span-nested GLiNER.
     \item \textbf{Domain-adapted backbones} -- SocBERT (Reddit), StressRoBERTa (mental health).
     \item \textbf{Weight-space model soup} -- top-$K$ checkpoint averaging.
     \item \textbf{Prediction-space ensemble search} -- exhaustive subsets, majority vote and probability averaging.
   \end{enumerate}
   \vfill
-  \textcolor{neutral}{\footnotesize Each innovation is evaluated with a small LR sweep [2e-5, 5e-5] and the best LR per family is reported.}
+  \textcolor{neutral}{\footnotesize Each innovation is evaluated with a small LR sweep [2e-5, 5e-5] inside each regime (raw, preprocessed), and the best LR per family is reported.}
 \end{frame}
 
-% ---------- 7. Innovation 1: Focal Loss ----------
+% ---------- 9. Innovation 1: Focal Loss ----------
 \begin{frame}{Innovation 1: Distribution-Aware Focal Loss}
   \textbf{Definition.} Let $p_t$ be the predicted probability of the \emph{true} class for a token.
   Standard cross-entropy is $\text{CE}(p_t) = -\log p_t$. Focal loss adds a modulating factor:
@@ -212,18 +268,18 @@
   \begin{center}\scriptsize
   \begin{tabular}{lcc}
     \toprule
-    & Relaxed F1 & Strict F1 \\
+    Regime & Baseline (R / S) & + Focal (R / S) \\
     \midrule
-    DeBERTa baseline & \textbf{0.595} & 0.409 \\
-    + Focal loss ($\gamma{=}2$, $\alpha_{\text{Soc}}{=}1.5$) & 0.541 & 0.341 \\
+    raw & 0.595 / 0.409 & 0.541 / 0.341 \\
+    preprocessed & 0.545 / 0.421 & 0.538 / 0.358 \\
     \bottomrule
   \end{tabular}
   \end{center}
 
-  \footnotesize \textbf{Finding:} aggressive Social reweighting pushes the model to \emph{over}-fire on Social tokens ($-0.054$ / $-0.068$). \textcolor{neutral}{Distribution shift is real, but class weighting is the wrong lever for it.}
+  \footnotesize \textbf{Finding:} aggressive Social reweighting pushes the model to \emph{over}-fire on Social tokens in both regimes. Preprocessing softens the strict-F1 drop a little, but focal loss remains below the plain baseline either way. \textcolor{neutral}{Distribution shift is real, but class weighting is the wrong lever for it.}
 \end{frame}
 
-% ---------- 8a. Innovation 2 ----------
+% ---------- 10a. Innovation 2 ----------
 \begin{frame}{Innovation 2: Definition Prompting}
   Prepend natural-language \emph{definitions} of both entity types before the post; mask them from the loss.
   \medskip
@@ -247,18 +303,18 @@
   \begin{center}\footnotesize
   \begin{tabular}{lcc}
     \toprule
-    & Relaxed F1 & Strict F1 \\
+    Regime & Baseline (R / S) & + Definitions (R / S) \\
     \midrule
-    DeBERTa baseline & 0.595 & 0.409 \\
-    + Definition prompting & \textbf{0.613} ($+0.018$) & \textbf{0.410} \\
+    raw & 0.595 / 0.409 & 0.575 / 0.350 \\
+    preprocessed & 0.545 / 0.421 & \textbf{0.613} / 0.410 \\
     \bottomrule
   \end{tabular}
   \end{center}
   \vspace{-0.4em}
-  \footnotesize \textbf{Best single-model recipe in the project.}
+  \footnotesize \textbf{Finding:} definitions only really pay off once the text is cleaned. On raw they hurt; on preprocessed they become the best relaxed-F1 single-model recipe in the project.
 \end{frame}
 
-% ---------- 8b. Innovation 3 ----------
+% ---------- 10b. Innovation 3 ----------
 \begin{frame}{Innovation 3: Multi-task Auxiliary Head}
   Share the DeBERTa encoder between token NER and a sentence-level \emph{entity-presence} classifier.
 
@@ -283,13 +339,22 @@
   the target for $\text{CE}_{\text{presence}}$ is $y = \mathbf{1}[\text{sentence has any B/I tag}]$.
   \smallskip
 
-  \textbf{Result.} Relaxed F1 $= 0.581$ ($-0.014$ vs baseline $0.595$).
+  \begin{center}\footnotesize
+  \begin{tabular}{lcc}
+    \toprule
+    Regime & Baseline (R / S) & + Multi-task (R / S) \\
+    \midrule
+    raw & 0.595 / 0.409 & 0.581 / 0.382 \\
+    preprocessed & 0.545 / 0.421 & 0.550 / 0.394 \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
   \smallskip
 
-  \textbf{Under the LR sweep, multi-task \emph{slightly hurts} at the token level} -- the auxiliary signal competes with the token objective for encoder capacity on this small dataset. But the multi-task head is a strong feature extractor for later recipes: the recall-boost runs and several ensemble members build on top of it.
+  \textbf{Finding.} On raw, multi-task slightly hurts. On preprocessed it recovers to a small relaxed-F1 gain over the plain preprocessed baseline, but strict F1 still trails. The auxiliary head is more useful as a feature source for later recipes than as a standalone win.
 \end{frame}
 
-% ---------- 9. Innovation 4: Recall Boost ----------
+% ---------- 11. Innovation 4: Recall Boost ----------
 \begin{frame}{Innovation 4: Recall Boost via O-class Downweighting}
   \textbf{Diagnosis.} Error analysis showed recall lagging precision:
   29 missed spans, 13 of them single-token implicit expressions.
@@ -300,24 +365,23 @@
   \medskip
 
   \begin{center}\small
-  \begin{tabular}{lcc}
+  \begin{tabular}{lccc}
     \toprule
-    & Relaxed F1 & Strict F1 \\
+    Regime & Baseline (R / S) & Seed 42 (R / S) & Seed 123 (R / S) \\
     \midrule
-    \textbf{DeBERTa baseline} & \textbf{0.595} & \textbf{0.409} \\
-    Recall-Boost (seed 42) & 0.582 & 0.312 \\
-    Recall-Boost (seed 123) & 0.562 & 0.357 \\
+    raw & 0.595 / 0.409 & 0.582 / 0.312 & 0.562 / 0.357 \\
+    preprocessed & 0.545 / 0.421 & 0.560 / 0.330 & 0.552 / 0.359 \\
     \bottomrule
   \end{tabular}
   \end{center}
   \medskip
 
-  \textbf{Effect:} the relaxed-F1 gain flips negative under the LR sweep ($-0.013$), and strict F1 drops noticeably -- the O-downweight trades precision for recall.
+  \textbf{Effect:} preprocessing lifts strict F1 a little for both seeds, but recall-boost still stays below its own regime baseline. The O-downweight continues to trade precision for recall.
   Not a blockbuster alone, \emph{but} it produces errors that complement the other recipes --
   which matters for the ensemble.
 \end{frame}
 
-% ---------- 11. Innovation 5: R-Drop ----------
+% ---------- 12. Innovation 5: R-Drop ----------
 \begin{frame}{Innovation 5: R-Drop Consistency Regularization}
   Two stochastic forward passes on the \emph{same} batch, then force their distributions to agree.
   \medskip
@@ -349,16 +413,18 @@
   \begin{center}\footnotesize
   \begin{tabular}{lcc}
     \toprule
-    & Relaxed F1 & $\Delta$ vs baseline \\
+    Regime & Baseline (R / S) & + R-Drop s123 (R / S) \\
     \midrule
-    DeBERTa baseline & 0.595 & -- \\
-    + R-Drop (seed 123) & 0.577 & $-0.018$ \\
+    raw & 0.595 / 0.409 & 0.561 / 0.360 \\
+    preprocessed & 0.545 / 0.421 & 0.577 / 0.380 \\
     \bottomrule
   \end{tabular}
   \end{center}
+  \vspace{-0.2em}
+  \footnotesize Preprocessing is what makes R-Drop competitive on relaxed F1: the preprocessed run reaches 0.577 vs 0.561 on raw text, although strict F1 still stays below the plain preprocessed baseline.
 \end{frame}
 
-% ---------- 11b. Innovation 6: FGM + SWA ----------
+% ---------- 13. Innovation 6: FGM + SWA ----------
 \begin{frame}{Innovation 6: FGM Adversarial + SWA}
   \begin{columns}[T,onlytextwidth]
     \column{0.48\textwidth}
@@ -404,18 +470,18 @@
   \begin{center}\footnotesize
   \begin{tabular}{lcc}
     \toprule
-    & Relaxed F1 & $\Delta$ vs baseline \\
+    Regime & Baseline (R / S) & + FGM + SWA (R / S) \\
     \midrule
-    DeBERTa baseline & 0.595 & -- \\
-    + FGM + SWA (seed 42) & 0.573 & $-0.022$ \\
+    raw & 0.595 / 0.409 & 0.573 / 0.356 \\
+    preprocessed & 0.545 / 0.421 & 0.547 / 0.256 \\
     \bottomrule
   \end{tabular}
   \end{center}
   \vspace{-0.3em}
-  \footnotesize Robustness recipe: modestly below the raw baseline on dev, but produces diverse errors the ensemble leverages.
+  \footnotesize Robustness recipe: slightly below the raw baseline, and substantially worse after preprocessing. This one helps mostly through diversity, not standalone dev performance.
 \end{frame}
 
-% ---------- 11b. Training dynamics ----------
+% ---------- 14. Training dynamics ----------
 \begin{frame}{Training Dynamics Across Recipes}
   \vspace{-0.8em}
   \begin{center}
@@ -429,29 +495,28 @@
   Hierarchy drifts up after epoch~6, signalling mild overfit.
 \end{frame}
 
-% ---------- 11c. Structured prediction pipelines ----------
+% ---------- 15. Structured prediction pipelines ----------
 \begin{frame}{Structured Prediction Pipelines}
   \footnotesize
   Four structured variants on top of DeBERTa, each testing a different inductive bias:
   \vspace{-0.3em}
   \begin{center}\scriptsize
-  \begin{tabular}{p{3.9cm}p{6.7cm}c}
+  \begin{tabular}{p{3.2cm}p{4.8cm}cc}
     \toprule
-    Pipeline & Idea & Relaxed F1 \\
+    Pipeline & Idea & raw (R / S) & preprocessed (R / S) \\
     \midrule
-    \textbf{Hierarchical DeBERTa} & \texttt{[CLS]} sentence classifier gates a multi-task NER; 10\,\% of no-impact rows kept & \textbf{0.604} \\[2pt]
-    Two-Step Impact Pipeline & Stage 1: binary span extraction; Stage 2: clinical / social classifier per span & 0.534 \\[2pt]
-    Sentence $+$ Token Hierarchy & One model with joint sentence presence head and token BIO head & 0.530 \\[2pt]
-    Span-nested GLiNER & Span scorer with nested-span enumeration and overlap-aware decoding & 0.443 \\
+    \textbf{Hierarchical DeBERTa} & \texttt{[CLS]} sentence classifier gates a multi-task NER; 10\,\% of no-impact rows kept & \textbf{0.604} / 0.372 & 0.559 / 0.383 \\[2pt]
+    Two-Step Impact Pipeline & Stage 1: binary span extraction; Stage 2: clinical / social classifier per span & -- & 0.534 / 0.404 \\[2pt]
+    Sentence $+$ Token Hierarchy & One model with joint sentence presence head and token BIO head & -- & 0.530 / 0.375 \\[2pt]
+    Span-nested GLiNER & Span scorer with nested-span enumeration and overlap-aware decoding & -- & 0.443 / 0.491 \\
     \bottomrule
   \end{tabular}
   \end{center}
   \vspace{-0.3em}
-  \textbf{Hierarchical DeBERTa} is the clear winner and anchors the winning ensemble on the next slide.
-  The two-step and joint-hierarchy variants are close to each other but noticeably below the plain token classifier baseline ($0.595$); span-nested GLiNER plateaus much lower.
+  \textbf{Hierarchical DeBERTa} is the clear relaxed-F1 winner and anchors the winning ensemble on the next slide. Its strict F1 actually improves slightly under preprocessed, even though relaxed F1 drops. The other structured variants are only present in the notebook under the preprocessed regime.
   \medskip
 
-  \textcolor{neutral}{\scriptsize \textbf{Model soup (weight-space aggregation).} Orthogonal to everything above: average top-$K$ dev-F1 checkpoints from a single LR sweep ($\bar\theta = \tfrac{1}{K}\sum_k \theta_k$). Best soup: recall-boost s42 top-3 at $0.595$ (strict $+0.033$). Soup is only defined for same-architecture runs -- GLiNER, BiLSTM, and every pipeline family above are \emph{not} soupable.}
+  \textcolor{neutral}{\scriptsize \textbf{Model soup (weight-space aggregation).} Orthogonal to everything above: average top-$K$ dev-F1 checkpoints from a single LR sweep ($\bar\theta = \tfrac{1}{K}\sum_k \theta_k$). Best soup: recall-boost s42 top-3 at $0.595$ (strict $0.331$), matching the plain baseline on relaxed F1 but still below definition prompting. Soup is only defined for same-architecture runs -- GLiNER, BiLSTM, and every pipeline family above are \emph{not} soupable.}
 \end{frame}
 
 % ---------- 12. Ensemble ----------
@@ -459,8 +524,8 @@
   \scriptsize
   \textbf{Two complementary searches}, both exhaustive over size-2--5 subsets:
   \begin{itemize}\setlength{\itemsep}{0pt}
-    \item \textbf{Majority vote, cross-version:} top-7 relaxed $+$ top-7 strict from each regime (v2 / v5) $\Rightarrow$ 28 candidates, \textbf{122{,}409 combinations}. Operates on BIO tag sequences -- every family is eligible.
-    \item \textbf{Probability average, v2-only:} 7 candidates, 112 combinations. Averages per-token class distributions, so GLiNER span models and structured pipelines are excluded.
+    \item \textbf{Majority vote, cross-version:} top-7 relaxed $+$ top-7 strict from each regime (wihtout preprocessing / with preprocessing) $\Rightarrow$ 28 candidates, \textbf{122{,}409 combinations}. Operates on BIO tag sequences -- every family is eligible.
+    \item \textbf{Probability average} 7 candidates, 112 combinations. Averages per-token class distributions, so GLiNER span models and structured pipelines are excluded.
   \end{itemize}
 
   \begin{center}\scriptsize
@@ -474,7 +539,7 @@
     \textbf{4 models (majority)} & \ours & 0.509 & 0.648 & 0.623 \\
     5 models (majority) & 0.631 & \textbf{0.518} & 0.670 & 0.597 \\
     \midrule
-    Best probability average (v2, 7 cand.) & 0.614 & 0.431 & 0.653 & 0.580 \\
+    Best probability average (raw, 7 cand.) & 0.614 & 0.431 & 0.653 & 0.580 \\
     \bottomrule
   \end{tabular}
   \end{center}
@@ -490,35 +555,35 @@
     \toprule
     Model & Relaxed F1 & Strict F1 & Best LR & Epoch \\
     \midrule
-    BiLSTM-CRF & 0.296 & 0.256 & 5e-4 & 15 \\
+    BiLSTM-CRF & 0.296 & 0.256 & 5e-4 & 9 \\
     GLiNER (fine-tuned) & 0.524 & -- & 2e-5 & -- \\
     \quad Span-nested GLiNER & 0.443 & -- & 1e-5 & -- \\
     SocBERT baseline & 0.404 & 0.277 & 5e-5 & -- \\
     StressRoBERTa baseline & 0.482 & 0.270 & 2e-5 & -- \\
-    DeBERTa baseline & 0.595 & 0.409 & 2e-5 & 7 \\
-    \quad + Focal loss & 0.541 & 0.341 & 2e-5 & 6 \\
-    \quad + Multi-task & 0.581 & 0.382 & 5e-5 & 9 \\
-    \textbf{\quad + Definition prompting} & \bestsingle & \textbf{0.410} & 5e-5 & 5 \\
+    DeBERTa baseline & 0.595 & 0.409 & 2e-5 & 8 \\
+    \quad + Focal loss & 0.541 & 0.341 & 2e-5 & 8 \\
+    \quad + Multi-task & 0.581 & 0.382 & 5e-5 & 7 \\
+    \textbf{\quad + Definition prompting} & \bestsingle & 0.410 & 5e-5 & 7 \\
     Hierarchical DeBERTa pipeline & 0.604 & 0.372 & 2e-5 & -- \\
     Two-Step Impact Pipeline & 0.534 & 0.404 & 2e-5 & -- \\
     Sentence + Token Hierarchy & 0.530 & 0.374 & 5e-5 & -- \\
-    Recall-Boost (seed 42) & 0.582 & 0.312 & 2e-5 & 7 \\
+    Recall-Boost (seed 42) & 0.582 & 0.312 & 2e-5 & 8 \\
     R-Drop (seed 123) & 0.577 & 0.380 & 2e-5 & 9 \\
-    FGM + SWA (seed 42) & 0.573 & 0.356 & 2e-5 & 10 \\
+    FGM + SWA (seed 42) & 0.573 & 0.356 & 2e-5 & 12 \\
     Model soup (recall-boost s42) & 0.595 & 0.331 & 2e-5 & -- \\
     \rowcolor{good!15}
-    \textbf{4-Model Ensemble (majority vote)} & \ours & \textbf{0.509} & -- & -- \\
+    \textbf{4-Model Ensemble (majority vote)} & \ours & 0.509 & -- & -- \\
     \midrule
     \textit{GPT-4o 3-shot (reported)} & \textit{0.440} & -- & -- & -- \\
     \textit{DeBERTa (published SOTA)} & \textit{0.610} & -- & -- & -- \\
     \bottomrule
   \end{tabular}
   \vfill
-  \footnotesize Dev-set evaluation. Each family has its own LR sweep; the row reports the best LR.
+  \footnotesize Dev-set evaluation. Each family has its own LR sweep; the row reports the best LR. The strict-optimal majority-vote ensemble is a different 5-model subset at 0.518 strict F1.
 \end{frame}
 
 % ---------- 14. Error Analysis ----------
-\begin{frame}{Error Analysis on the Best Single Model}
+\begin{frame}{Error Analysis on the Best Relaxed Single Model}
   Definition Prompting (lr\,5e-5), Relaxed F1 $= 0.613$, Strict F1 $= 0.410$.
   \medskip
   \begin{columns}[T,onlytextwidth]
@@ -552,11 +617,11 @@
     \smallskip
     \item \textbf{Training-objective diversity beats individual model polish.}
           Single models plateau around $0.60$; a 4-model majority-vote ensemble
-          climbs to \ours{} -- a $+0.04$ jump from combining \emph{different recipes}
+          climbs to \ours{} -- a $+0.022$ jump over the best relaxed single model from combining \emph{different recipes}
           (hierarchical, definition, recall-boost, R-Drop), not more seeds of the same one.
     \smallskip
     \item \textbf{Majority vote beats probability averaging.}
-          On this small, noisy dev set, hard voting ($0.635$) is more robust
+          On this small, noisy dev set, hard voting (\ours{}) is more robust
           than soft averaging ($0.614$). Confident-but-occasionally-wrong
           models don't combine well via logits.
   \end{enumerate}
@@ -587,9 +652,9 @@
     \item \textbf{Task:} BIO NER for Clinical/Social impacts of substance use on Reddit.
     \item \textbf{Models:} BiLSTM-CRF, GLiNER (fine-tuned), SocBERT, StressRoBERTa, DeBERTa-v3-large.
     \item \textbf{7 contribution buckets:} ablations, advanced regularization, preprocessing axis, structured pipelines, domain backbones, model soup, ensemble search -- each evaluated under an LR sweep.
-    \item \textbf{Best single model:} Definition Prompting, $F_{1} = \bestsingle$ (exceeds baseline by $+0.018$).
+    \item \textbf{Best relaxed single model:} Definition Prompting, $F_{1} = \bestsingle$ (exceeds baseline by $+0.018$).
     \item \textbf{Best system:} 4-model majority-vote ensemble,
-          $F_{1} = \ours$, clearly beating the published SOTA \sota{} on dev ($+0.025$).
+          $F_{1} = \ours$, beating the published SOTA \sota{} on dev ($+0.025$).
     \item \textbf{Main takeaway:} training-objective diversity + majority voting $>$ any single-model trick we tried.
   \end{itemize}
 \end{frame}

@@ -1,0 +1,14 @@
+[voxcpm] loading model on cuda:4
+Fetching 8 files:   0%|          | 0/8 [00:00<?, ?it/s]Fetching 8 files:  12%|█▎        | 1/8 [00:00<00:03,  2.13it/s]Fetching 8 files:  25%|██▌       | 2/8 [00:00<00:02,  2.73it/s]Fetching 8 files: 100%|██████████| 8/8 [00:00<00:00, 10.46it/s]
+voxcpm_model_path: /dataset/chongtia002/hf_cache_root/hub/models--openbmb--VoxCPM2/snapshots/2b5660c581003207ff5d6473b1c0e07f91ae7d99, zipenhancer_model_path: None, enable_denoiser: False
+/export/home2/chongtia002/nlp_assignment/slides/voice/.tts_venv/lib/python3.11/site-packages/torch/nn/utils/weight_norm.py:143: FutureWarning: `torch.nn.utils.weight_norm` is deprecated in favor of `torch.nn.utils.parametrizations.weight_norm`.
+  WeightNorm.apply(module, name, dim)
+Loading AudioVAE from pytorch: /dataset/chongtia002/hf_cache_root/hub/models--openbmb--VoxCPM2/snapshots/2b5660c581003207ff5d6473b1c0e07f91ae7d99/audiovae.pth
+Running on device: cuda, dtype: bfloat16
+Loading model from safetensors: /dataset/chongtia002/hf_cache_root/hub/models--openbmb--VoxCPM2/snapshots/2b5660c581003207ff5d6473b1c0e07f91ae7d99/model.safetensors
+Loaded VoxCPM2Model
+Warm up VoxCPMModel...
+  0%|          | 0/10 [00:00<?, ?it/s] 10%|█         | 1/10 [00:27<04:09, 27.73s/it] 20%|██        | 2/10 [00:28<01:36, 12.01s/it] 40%|████      | 4/10 [00:28<00:27,  4.52s/it] 60%|██████    | 6/10 [00:28<00:09,  2.41s/it] 80%|████████  | 8/10 [00:29<00:02,  1.47s/it]100%|██████████| 10/10 [00:29<00:00,  1.05it/s]100%|██████████| 10/10 [00:29<00:00,  2.92s/it]
+[voxcpm] model loaded in 104.6s
+[voxcpm] output sample_rate = 48000
+  0%|          | 0/580 [00:00<?, ?it/s]  0%|          | 2/580 [00:00<00:36, 16.00it/s]  1%|          | 4/580 [00:00<00:36, 15.90it/s]  1%|          | 6/580 [00:00<00:36, 15.92it/s]  1%|▏         | 8/580 [00:00<00:35, 15.94it/s]  2%|▏         | 10/580 [00:00<00:35, 15.96it/s]  2%|▏         | 12/580 [00:00<00:35, 15.98it/s]  2%|▏         | 14/580 [00:00<00:35, 15.99it/s]  3%|▎         | 16/580 [00:01<00:35, 15.98it/s]  3%|▎         | 18/580 [00:01<00:35, 15.98it/s]  3%|▎         | 20/580 [00:01<00:35, 15.97it/s]  4%|▍         | 22/580 [00:01<00:34, 15.99it/s]  4%|▍         | 24/580 [00:01<00:34, 16.01it/s]  4%|▍         | 26/580 [00:01<00:34, 16.01it/s]  5%|▍         | 28/580 [00:01<00:34, 15.97it/s]  5%|▌         | 30/580 [00:01<00:34, 15.95it/s]  6%|▌         | 32/580 [00:02<00:34, 15.97it/s]  6%|▌         | 34/580 [00:02<00:34, 15.75it/s]

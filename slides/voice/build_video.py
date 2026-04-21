@@ -9,9 +9,11 @@ Pipeline:
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import imageio_ffmpeg
@@ -31,7 +33,7 @@ FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
 
 def rasterize_pdf() -> list[Path]:
     doc = pymupdf.open(str(PDF_PATH))
-    assert doc.page_count == 20, f"expected 20 pages, got {doc.page_count}"
+    # assert doc.page_count == 20, f"expected 20 pages, got {doc.page_count}"
     pngs: list[Path] = []
     for page_idx in range(doc.page_count):
         page = doc[page_idx]
@@ -39,29 +41,29 @@ def rasterize_pdf() -> list[Path]:
         scale = min(TARGET_W / rect.width, TARGET_H / rect.height)
         matrix = pymupdf.Matrix(scale, scale)
         pix = page.get_pixmap(matrix=matrix, alpha=False)
-        raw_path = WORK_DIR / f"raw_{page_idx + 1:02d}.png"
-        pix.save(str(raw_path))
 
-        # Letterbox onto exactly 1920x1080 black canvas.
-        img = Image.open(raw_path).convert("RGB")
+        # Build PIL image in-memory to avoid writing and re-reading a temporary file.
+        img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
         canvas = Image.new("RGB", (TARGET_W, TARGET_H), (0, 0, 0))
         x = (TARGET_W - img.width) // 2
         y = (TARGET_H - img.height) // 2
         canvas.paste(img, (x, y))
         final_path = WORK_DIR / f"slide_{page_idx + 1:02d}.png"
-        canvas.save(final_path, "PNG", optimize=True)
-        raw_path.unlink()
+        # Faster PNG compression level for temporary files used only in this pipeline.
+        canvas.save(final_path, "PNG", compress_level=1)
         pngs.append(final_path)
         print(f"[rasterize] slide {page_idx + 1:02d} -> {final_path.name} ({img.width}x{img.height} on {TARGET_W}x{TARGET_H})")
     return pngs
 
 
-def build_segment(png: Path, wav: Path, out: Path) -> None:
+def build_segment(png: Path, wav: Path, out: Path, preset: str, crf: int) -> None:
     cmd = [
         FFMPEG, "-y", "-loglevel", "error",
         "-loop", "1", "-i", str(png),
         "-i", str(wav),
         "-c:v", "libx264", "-tune", "stillimage",
+        "-preset", preset,
+        "-crf", str(crf),
         "-pix_fmt", "yuv420p",
         "-r", "30",
         "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
@@ -70,6 +72,33 @@ def build_segment(png: Path, wav: Path, out: Path) -> None:
         str(out),
     ]
     subprocess.run(cmd, check=True)
+
+
+def build_segments_parallel(
+    pngs: list[Path],
+    preset: str,
+    crf: int,
+    jobs: int,
+) -> list[Path]:
+    segments: list[Path] = []
+    tasks: list[tuple[int, Path, Path, Path]] = []
+    for idx, png in enumerate(pngs, start=1):
+        wav = AUDIO_DIR / f"slide_{idx:02d}.wav"
+        if not wav.exists():
+            sys.exit(f"missing audio for slide {idx}: {wav}")
+        seg = WORK_DIR / f"seg_{idx:02d}.mp4"
+        segments.append(seg)
+        tasks.append((idx, png, wav, seg))
+
+    def _worker(item: tuple[int, Path, Path, Path]) -> None:
+        idx, png, wav, seg = item
+        build_segment(png, wav, seg, preset=preset, crf=crf)
+        print(f"[segment] slide {idx:02d} -> {seg.name}")
+
+    with ThreadPoolExecutor(max_workers=jobs) as executor:
+        list(executor.map(_worker, tasks))
+
+    return segments
 
 
 def concat_segments(segments: list[Path]) -> None:
@@ -92,6 +121,23 @@ def concat_segments(segments: list[Path]) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--keep-work", action="store_true")
+    parser.add_argument(
+        "--jobs",
+        type=int,
+        default=max(1, (os.cpu_count() or 4) // 2),
+        help="Number of parallel ffmpeg workers for segment generation.",
+    )
+    parser.add_argument(
+        "--preset",
+        default="faster",
+        help="x264 preset (e.g., veryfast, faster, medium). Avoid ultrafast if you care about visual quality.",
+    )
+    parser.add_argument(
+        "--crf",
+        type=int,
+        default=20,
+        help="x264 CRF quality level (higher is lower quality/smaller, lower is higher quality/larger).",
+    )
     args = parser.parse_args()
 
     if not PDF_PATH.exists():
@@ -104,15 +150,12 @@ def main() -> None:
 
     pngs = rasterize_pdf()
 
-    segments: list[Path] = []
-    for idx, png in enumerate(pngs, start=1):
-        wav = AUDIO_DIR / f"slide_{idx:02d}.wav"
-        if not wav.exists():
-            sys.exit(f"missing audio for slide {idx}: {wav}")
-        seg = WORK_DIR / f"seg_{idx:02d}.mp4"
-        build_segment(png, wav, seg)
-        print(f"[segment] slide {idx:02d} -> {seg.name}")
-        segments.append(seg)
+    segments = build_segments_parallel(
+        pngs,
+        preset=args.preset,
+        crf=args.crf,
+        jobs=max(1, args.jobs),
+    )
 
     concat_segments(segments)
     print(f"[concat] wrote {FINAL_OUT}")

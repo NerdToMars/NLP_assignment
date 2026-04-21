@@ -86,6 +86,7 @@ Produces a fresh `voice/talk.mp4`. No GPU needed. ~20 s.
 cd voice
 ./.tts_venv/bin/python generate.py --device cuda:3
 ./.tts_venv/bin/python build_video.py
+./.tts_venv/bin/python build_video.py --jobs 22 --preset faster --crf 19
 ```
 
 Regenerates every slide's audio (~14 min on a single A6000) then rebuilds
