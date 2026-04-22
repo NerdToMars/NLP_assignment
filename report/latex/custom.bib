@@ -1,9 +1,9 @@
-@article{he2021deberta,
+@inproceedings{he2023debertav3,
   title={{DeBERTaV3}: Improving {DeBERTa} using {ELECTRA}-Style Pre-Training with Gradient-Disentangled Embedding Sharing},
   author={He, Pengcheng and Gao, Jianfeng and Chen, Weizhu},
-  journal={arXiv preprint arXiv:2111.09543},
-  year={2021},
-  url={https://arxiv.org/abs/2111.09543}
+  booktitle={International Conference on Learning Representations (ICLR)},
+  year={2023},
+  url={https://openreview.net/forum?id=sE7-XhLxHA}
 }
 
 @inproceedings{lin2017focal,
@@ -18,6 +18,8 @@
   title={{R}-{D}rop: Regularized Dropout for Neural Networks},
   author={Liang, Xiaobo and Wu, Lijun and Li, Juntao and Wang, Yue and Meng, Qi and Qin, Tao and Chen, Wei and Zhang, Min and Liu, Tie-Yan},
   booktitle={Advances in Neural Information Processing Systems (NeurIPS)},
+  volume={34},
+  pages={10771--10782},
   year={2021}
 }
 
@@ -42,14 +44,16 @@
   year={2022}
 }
 
-@inproceedings{kuncheva2003measures,
+@article{kuncheva2003measures,
   title={Measures of Diversity in Classifier Ensembles and Their Relationship with the Ensemble Accuracy},
   author={Kuncheva, Ludmila I. and Whitaker, Christopher J.},
-  booktitle={Machine Learning},
+  journal={Machine Learning},
   volume={51},
   number={2},
   pages={181--207},
-  year={2003}
+  year={2003},
+  publisher={Springer},
+  doi={10.1023/A:1022859003006}
 }
 
 @inproceedings{zaratiana2024gliner,
@@ -62,40 +66,48 @@
 @inproceedings{guo2023socbert,
   title={SocBERT: A pretrained model for social media text},
   author={Guo, Yuting and Sarker, Abeed},
-  booktitle={Proceedings of the Fourth Workshop on Insights from Negative Results in NLP},
+  booktitle={Proceedings of the Fourth Workshop on Insights from Negative Results in NLP, co-located with ACL 2023},
   pages={45--52},
-  year={2023}
+  year={2023},
+  publisher={Association for Computational Linguistics}
 }
 
 @misc{stressroberta2022,
-  title={{StressRoBERTa}: A {RoBERTa} Model Fine-tuned on Stress and Mental-Health Text},
-  author={Amalq},
+  title={{stress-roberta-base}: A {RoBERTa} Model Fine-tuned on Stress and Mental-Health Text},
+  author={{Amalq}},
   year={2022},
-  howpublished={\url{https://huggingface.co/Amalq/stress-roberta-base}}
+  howpublished={HuggingFace model card, \url{https://huggingface.co/Amalq/stress-roberta-base}},
+  note={Accessed 2026-04}
 }
 
 @article{sarker2019social,
-  title={Social Media Mining for Toxicovigilance: Automatic Monitoring of Prescription Medication Abuse from {T}witter},
+  title={Machine Learning and Natural Language Processing for Geolocation-Centric Monitoring and Characterization of Opioid-Related Social Media Chatter},
   author={Sarker, Abeed and Gonzalez-Hernandez, Graciela and Ruan, Yucheng and Perrone, Jeanmarie},
-  journal={Drug Safety},
-  volume={42},
+  journal={JAMA Network Open},
+  volume={2},
   number={11},
-  pages={1421--1434},
-  year={2019}
+  pages={e1914672},
+  year={2019},
+  doi={10.1001/jamanetworkopen.2019.14672}
 }
 
 @inproceedings{weissenbacher2022overview,
   title={Overview of the Seventh Social Media Mining for Health Applications ({SMM4H}) Shared Tasks at {COLING} 2022},
-  author={Weissenbacher, Davy and Sarker, Abeed and Magge, Arjun and O'Connor, Karen and Gonzalez-Hernandez, Graciela},
-  booktitle={Proceedings of the Seventh Social Media Mining for Health (SMM4H) Workshop and Shared Task},
-  year={2022}
+  author={Weissenbacher, Davy and Banda, Juan and Davydova, Vera and Estrada Zavala, Darryl and Gasco S{\'a}nchez, Luis and Ge, Yao and Guo, Yuting and Klein, Ari and Krallinger, Martin and Leddin, Mathias and Magge, Arjun and Rodriguez-Esteban, Raul and Sarker, Abeed and Schmidt, Lucia and Tutubalina, Elena and Gonzalez-Hernandez, Graciela},
+  booktitle={Proceedings of the Seventh Workshop on Social Media Mining for Health Applications, Workshop \& Shared Task},
+  pages={221--241},
+  year={2022},
+  publisher={Association for Computational Linguistics}
 }
 
-@misc{garg2025reddit,
-  title={{R}eddit-{I}mpacts 2.0: A Token-Level Benchmark for Extracting Clinical and Social Impacts of Substance Use},
-  author={Garg, Siddhartha and Sarker, Abeed and others},
+@misc{dey2025reddit,
+  title={Inference Gap in Domain Expertise and Machine Intelligence in Named Entity Recognition: Creation of and Insights from a Substance Use Knowledge Base},
+  author={Dey, Sumon Kanti and others},
   year={2025},
-  howpublished={SMM4H--HeaRD 2026 Shared Task dataset}
+  eprint={2508.19467},
+  archivePrefix={arXiv},
+  primaryClass={cs.CL},
+  note={Describes the Reddit-Impacts 2.0 corpus used by the SMM4H--HeaRD 2026 Shared Task}
 }
 
 @inproceedings{obeidat2024ukynlp,
@@ -134,7 +146,7 @@
 
 
 @inproceedings{ smm4h-heard-overview-2026,
-author = "Lopez-Garcia, Guillermo and Acitores Cortina, Jose Miguel and Berkowitz, Jacob and Chan, Joey and Chandrasekar, Ganesh and Dey, Sumon Kanti and Flores Amaro, Ivan and Gallego, Fernando and Gryboski, Lauren and Klein, Ari Z and Krallinger, Martin and Lima-López, Salvador and Nishiyama, Tomohiro and Raithel, Lisa and Rezaie Mianroodi, Ahmad and Roller, Roland and Rosell, Judith and Rudzicz, Frank and Sarker, Abeed and Tatonetti, Nicholas and Thomas, Philippe and Tutubalina, Elena and Xu, Dongfang and Zaidi, Farnaz and Zhai Yu and Zweigenbaum, Pierre and Gonzalez-Hernandez, Graciela",
+author = "Lopez-Garcia, Guillermo and Acitores Cortina, Jose Miguel and Berkowitz, Jacob and Chan, Joey and Chandrasekar, Ganesh and Dey, Sumon Kanti and Flores Amaro, Ivan and Gallego, Fernando and Gryboski, Lauren and Klein, Ari Z. and Krallinger, Martin and Lima-L{\'o}pez, Salvador and Nishiyama, Tomohiro and Raithel, Lisa and Rezaie Mianroodi, Ahmad and Roller, Roland and Rosell, Judith and Rudzicz, Frank and Sarker, Abeed and Tatonetti, Nicholas and Thomas, Philippe and Tutubalina, Elena and Xu, Dongfang and Zaidi, Farnaz and Zhai, Yu and Zweigenbaum, Pierre and Gonzalez-Hernandez, Graciela",
   year = 2026,
   title = "{Overview of the 11th Social Media Mining for Health (\#SMM4H) and Health Real-World Data (HeaRD) Shared Tasks at ACL 2026}",
   booktitle = "Proceedings of the 11th Social Media Mining for Health (\#SMM4H) and Health Real-World Data (HeaRD) Workshop and Shared Tasks",
