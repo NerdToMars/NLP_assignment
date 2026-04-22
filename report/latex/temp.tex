@@ -21,7 +21,7 @@
 \title{Extracting Social and Clinical Impacts of Substance Use\\
 from Reddit with Structured Pipelines and Ensemble Search}
 
-\author{Ismail Elyamany \quad Huang Chongtian \quad Xia Yitong \quad Zhu Ruijie\\
+\author{Ismail Elyamany, \ Chongtian Huang, \ Yitong Xia, \ Ruijie Zhu\\
 Nanyang Technological University \\
 \texttt{\{ismailma001, chongtia002, yitong010, ruijie008\}@e.ntu.edu.sg}
 % \\ \todo{Everyone plz check your own email address}
@@ -30,30 +30,24 @@ Nanyang Technological University \\
 \maketitle
 
 \begin{abstract}
-We present our submission to the SMM4H--HeaRD 2026 Task~7 shared task,
-which asks systems to extract \emph{Clinical} and \emph{Social} impacts of
-substance use from Reddit posts as a token-level BIO tagging problem. The
-benchmark is difficult for two reasons: the label prior flips between train
-and test (train is $\approx$75\% Clinical, test is $\approx$70\% Social),
-and many entities are implicit colloquialisms without medical vocabulary.
-We compare five model families---BiLSTM--CRF, GLiNER (fine-tuned), SocBERT,
-StressRoBERTa, and DeBERTa-v3-large---under a consistent learning-rate
-sweep, and organise our contributions into four buckets:
-imbalanced-inputs training, advanced regularisation, architecture
-(structured-prediction pipelines and domain-adapted backbones), and
-ensemble techniques (weight-space model soup and an exhaustive
-prediction-space ensemble search). We additionally treat preprocessing
-as a first-class experimental axis (raw vs cleaned Reddit text) that
-runs orthogonally to every bucket. Our best
-single-model recipe, definition prompting, reaches relaxed F1 $= 0.613$.
-Our best overall system is a four-model majority-vote ensemble at relaxed
-F1 $= 0.635$, beating the published baseline on the same dev split by
-$+0.025$. On the official test leaderboard our submitted system placed
-\textbf{5th of 11} teams (strict F1 $= 0.49$, relaxed F1 $= 0.45$); the
-submitted run was an earlier configuration---the dev-best ensemble was
-finalised after the deadline and could not be evaluated on test. The
-main lesson is that training-objective diversity, combined with hard
-majority voting, is a stronger lever than polishing any single model.
+We present our submission to SMM4H--HeaRD 2026 Task~7, which extracts
+\emph{Clinical} and \emph{Social} impacts of substance use from Reddit
+posts as token-level BIO tagging. The benchmark is hard for two reasons:
+the label prior flips between train ($\approx$75\% Clinical) and test
+($\approx$70\% Social), and many entities are implicit colloquialisms
+without medical vocabulary. We compare five model families---BiLSTM--CRF,
+GLiNER, SocBERT, StressRoBERTa, and DeBERTa-v3-large---under a consistent
+LR sweep, organise our contributions into four buckets (imbalanced-inputs
+training, advanced regularisation, architecture, and ensemble
+techniques), and treat preprocessing as an orthogonal raw-vs-cleaned
+experimental axis. Our best single model, definition prompting, reaches
+relaxed F1 $=0.613$; our best system, a four-model majority-vote
+ensemble, reaches $0.635$, beating the published baseline on the same
+dev split by $+0.025$. On the official test leaderboard our submitted
+system (an earlier configuration than the dev-best ensemble) placed
+\textbf{5th of 11} teams (strict F1 $=0.49$, relaxed F1 $=0.45$).
+The main lesson: training-objective diversity combined with hard
+majority voting is a stronger lever than polishing any single model.
 \end{abstract}
 
 \section{Introduction}
@@ -76,7 +70,7 @@ to Social ($\approx$70\%). On top of that, many impacts are expressed
 \emph{implicitly}---``those weeks were hell'' is a Clinical span without
 a single clinical token---so lexical and ontology-based cues are weak. The
 published baseline on Reddit-Impacts 2.0 reaches relaxed F1 $= 0.610$,
-and inter-annotator agreement is around $0.81$ \citep{garg2025reddit},
+and inter-annotator agreement is around $0.81$ \citep{dey2025reddit},
 leaving a 0.20 gap that no single well-known recipe closes.
 
 We treat this as a systems problem and report a thorough comparison across
@@ -124,9 +118,9 @@ combines.
 Extracting clinically-relevant spans from social-media text has been
 studied for medication mentions, adverse drug events, and more recently
 substance-use impacts \citep{sarker2019social,weissenbacher2022overview,
-garg2025reddit}. The dominant approach is a transformer encoder with a
+dey2025reddit}. The dominant approach is a transformer encoder with a
 token-classification head, sometimes augmented with domain adaptation.
-Reddit-Impacts~2.0 \citep{garg2025reddit} is unusual in separating
+Reddit-Impacts~2.0 \citep{dey2025reddit} is unusual in separating
 \emph{clinical} and \emph{social} outcomes and in deliberately flipping
 the label prior between train and test.
 
@@ -135,7 +129,7 @@ Reddit-specific pre-training \citep{guo2023socbert} and mental-health-domain
 pre-training \citep{stressroberta2022} typically help when the downstream
 task shares vocabulary and register with the pre-training corpus. In our
 setting, however, the task labels are not register-bound and generic
-DeBERTa-v3 \citep{he2021deberta} outperforms both domain-adapted encoders.
+DeBERTa-v3 \citep{he2023debertav3} outperforms both domain-adapted encoders.
 
 \paragraph{Span-based NER and regularisation.}
 GLiNER \citep{zaratiana2024gliner} frames NER as open-type span
@@ -150,25 +144,18 @@ training \citep{miyato2017adversarial}, and SWA
 cross-regime subset search over these ingredients.
 
 \paragraph{Prior SMM4H iterations of the Reddit-Impacts track.}
-The task has a two-year lineage before ours. It first ran as Task~4 at
-SMM4H~2024 on an earlier version of the corpus: UKYNLP
-\citep{obeidat2024ukynlp} topped the leaderboard with encoder-LM
-ensembles, while Dolomites \citep{tortoreto2024dolomites} reached
-strict F1 $= 0.208$ with a Mistral-7B QLoRA setup that combined
-multi-task learning with two data-augmentation strategies, in-domain
-augmentation and ``drills'' (smaller auxiliary tasks extracted from
-the target dataset, with the training set replicated to include
-additional drill examples). Their result is a useful reference point
-because it shows that even LLM-scale fine-tuning on augmented data
-leaves substantial headroom on the strict-F1 axis we also target. At
-SMM4H--HeaRD~2025 the task was rerun as Task~2
-\citep{klein2025overview}; the top-ranked submission, LLM Pros
-\citep{pradhan2025llmpros}, used a fine-tuning-free LLM pipeline
-(prompt engineering plus strict JSON schemas and lightweight rules).
-Our work returns to the encoder-fine-tuning side of the design space
-and shows that an encoder-only, training-objective-diverse ensemble
-can match or outperform prompt-engineered LLM pipelines on the 2026
-version of the benchmark.
+The task first ran as SMM4H~2024 Task~4 on an earlier corpus version:
+UKYNLP \citep{obeidat2024ukynlp} topped the leaderboard with
+encoder-LM ensembles, and Dolomites \citep{tortoreto2024dolomites}
+reached strict F1 $=0.208$ with a Mistral-7B QLoRA setup plus
+in-domain augmentation and ``drills'' --- evidence that even
+LLM-scale fine-tuning on augmented data leaves substantial strict-F1
+headroom. At SMM4H--HeaRD~2025 \citep{klein2025overview} the
+top-ranked LLM Pros submission \citep{pradhan2025llmpros} used a
+prompt-engineered, fine-tuning-free LLM pipeline. Our work returns to
+the encoder-fine-tuning side of the design space and shows that an
+objective-diverse encoder ensemble can match those systems on the
+2026 benchmark.
 
 \section{Task and Dataset}
 \label{sec:data}
@@ -216,20 +203,15 @@ tokeniser. Usernames, URLs, mojibake (broken Unicode from earlier
 encoding/decoding trips), emoji, and stray punctuation are preserved.
 This regime maximises lexical fidelity but produces noisy token
 boundaries.
-\item \textbf{Preprocessed regime.} We apply four token-aligned
-operations: (i) mojibake normalisation (fixing broken UTF-8 artifacts
-such as \texttt{â€™} $\to$ \texttt{'}) in place; (ii) in-place
-substitution of \texttt{@user} and \texttt{/u/user} mentions with a
-\texttt{[USER]} placeholder and of URLs with a \texttt{[URL]}
-placeholder; (iii) deletion of emoji, punctuation-only tokens
-(\texttt{:}, \texttt{-}, \texttt{""}, symbol runs), and dataset
-metadata markers (\texttt{submission\_title},
-\texttt{submission\_subreddit}), shortening the sequence the model
-sees; and (iv) post-hoc realignment at inference: deleted positions
-are restored as \texttt{O} in the output BIO sequence so the final
-prediction length matches the original tokenisation. Substitutions
-(i)--(ii) preserve length; deletions (iii) do not, but the
-restoration step in (iv) keeps the reported BIO sequence aligned.
+\item \textbf{Preprocessed regime.} Four token-aligned operations: (i)
+mojibake normalisation (e.g.\ \texttt{â€™} $\to$ \texttt{'}); (ii)
+in-place substitution of \texttt{@user}/\texttt{/u/user} mentions with
+\texttt{[USER]} and URLs with \texttt{[URL]}; (iii) deletion of emoji,
+punctuation-only tokens, and dataset metadata markers
+(\texttt{submission\_title}, \texttt{submission\_subreddit}); and (iv)
+post-hoc realignment at inference, where deleted positions are restored
+as \texttt{O} so the output BIO length matches the original
+tokenisation.
 \end{itemize}
 
 The effect of the regime is family-specific. BiLSTM--CRF and GLiNER both
@@ -266,7 +248,7 @@ pre-trained on mental-health text. Both are token classifiers with a
 linear head.
 
 \paragraph{DeBERTa-v3-large (main backbone).}
-\citet{he2021deberta}'s disentangled-attention encoder with a linear
+\citet{he2023debertav3}'s disentangled-attention encoder with a linear
 token classification head is our primary backbone. All advanced
 innovations build on top of it.
 
@@ -286,45 +268,28 @@ both regimes and report the best LR per family.
 
 \subsubsection{Bucket 1: Imbalanced-inputs training}
 
-The first bucket groups recipes that respond to the class-imbalance
-and distribution-shift pathology of the task---either by reshaping
-the loss, by injecting label semantics so the model is less reliant
-on surface frequency, or by sharing gradient with an auxiliary head
-that directly encodes the impact/no-impact boundary.
+Recipes in this bucket respond to class imbalance and the train$\to$test
+prior flip, either by reshaping the loss, injecting label semantics, or
+sharing gradient with an auxiliary head that encodes the
+impact/no-impact boundary.
 
-\paragraph{Focal loss.} We use the standard focal loss
-\citep{lin2017focal}
-\[
-\mathcal{L}_{\text{focal}}(p_t) = -\,\alpha_t\,(1 - p_t)^{\gamma}\,\log p_t,
-\]
-with $\gamma = 2.0$. The per-class weight vector $\alpha$ is
-data-driven: we take inverse training-frequency weights
-$\alpha_c \propto 1/f_c$, apply a smoothing exponent of $0.3$
-(i.e.\ $\alpha_c \leftarrow \alpha_c^{0.3}$) and renormalise so the
-class mean is one, then scale the B/I-Social entries by an additional
-factor of $1.5$ to push the model toward the under-represented Social
-class expected on test.
+\paragraph{Focal loss.} Standard focal loss \citep{lin2017focal}
+$\mathcal{L}_{\text{focal}}(p_t) = -\,\alpha_t\,(1 - p_t)^{\gamma}\,\log p_t$
+with $\gamma = 2.0$. The per-class weights $\alpha$ are data-driven:
+inverse training-frequency $\alpha_c \propto 1/f_c$, smoothed with
+exponent $0.3$, renormalised to unit mean, and B/I-Social then scaled by
+$1.5$ to push the model toward the under-represented Social class.
 
 \paragraph{Definition prompting.} We prepend a natural-language
-description of both entity types to every input, separated by a
-\texttt{[SEP]} token, and mask the prefix from the loss with $-100$
-labels so that the definitions are available to attention but do not
-contribute gradient. Two choices in the prompt matter: we make the
-perspective explicit (``personally experienced by the post author''),
-which biases the model away from third-person mentions, and we give a
-short list of concrete exemplars for each class, drawn from the
-annotation guidelines:
-\begin{quote}\small\raggedright
-\texttt{[CLS] Clinical Impacts are physical or psychological
-consequences of substance use personally experienced by the post
-author, such as overdose, withdrawal, addiction, depression, anxiety,
-hospitalization, or medical treatment. Social Impacts are social,
-occupational, legal, or relational consequences of substance use
-personally experienced by the post author, such as job loss, arrest,
-criminal charges, relationship breakdown, financial hardship, or
-homelessness. [SEP] $<$post$>$ [SEP]}
-\end{quote}
-This is the single best-performing recipe in the project.
+description of both entity types, separated by \texttt{[SEP]}, and mask
+the prefix from the loss with $-100$ labels so definitions are available
+to attention but contribute no gradient. Two prompt choices matter: we
+make the perspective explicit (``personally experienced by the post
+author''), biasing the model against third-person mentions, and list
+concrete exemplars per class drawn from the annotation guidelines
+(overdose, withdrawal, addiction, depression, \ldots; job loss, arrest,
+relationship breakdown, homelessness, \ldots). This is the single
+best-performing recipe in the project.
 
 \paragraph{Multi-task auxiliary head.} We share the DeBERTa encoder
 between the token NER head and a sentence-level binary head at
@@ -344,38 +309,28 @@ single model.
 
 \subsubsection{Bucket 2: Advanced regularisation}
 
-\paragraph{R-Drop.} We run each batch through the encoder twice with
-two independent dropout masks and add a symmetric KL penalty between
-the two output distributions. In practice we also stack the
-sentence-presence auxiliary head of the multi-task bucket on top, so
-the total objective is
-\begin{equation}
-\begin{split}
-\mathcal{L} &= \tfrac{1}{2}(\text{CE}(p_1)\!+\!\text{CE}(p_2)) \\
-&\quad + \alpha\,\mathrm{KL}_{\mathrm{sym}}(p_1\,\|\,p_2) + 0.3\,\mathcal{L}_{\text{presence}},
-\end{split}
-\end{equation}
-with $\alpha = 1.0$ and the KL term applied only on non-masked tokens.
-R-Drop itself introduces no new parameters; the auxiliary presence
-head is shared with the multi-task recipe.
+\paragraph{R-Drop.} Following \citet{liang2021rdrop}, we run each batch
+through the encoder twice with independent dropout masks and penalise
+disagreement with a symmetric KL. We also stack the multi-task sentence
+presence head, so the objective is $\mathcal{L} =
+\tfrac{1}{2}(\text{CE}(p_1)+\text{CE}(p_2))
++\alpha\,\mathrm{KL}_{\mathrm{sym}}(p_1\|p_2)
++0.3\,\mathcal{L}_{\text{presence}}$, with $\alpha=1.0$ and KL applied
+only on non-masked tokens. No new parameters are introduced.
 
-\paragraph{FGM~$+$~SWA.} Per training step we generate an adversarial
-perturbation $w \leftarrow w + \varepsilon\cdot g/\lVert g \rVert$ on the
-\texttt{word\_embeddings} layer with $\varepsilon = 0.5$
-\citep{miyato2017adversarial}, take a second forward pass, sum the
-gradients from the clean and adversarial passes, and step the optimiser.
-After epoch~10 we compute a stochastic weight average
-\citep{izmailov2018swa} over the remaining epoch checkpoints and use the
-averaged weights as the final model.
+\paragraph{FGM~$+$~SWA.} Per step we perturb the
+\texttt{word\_embeddings} by $w \leftarrow w + \varepsilon\cdot g/\lVert
+g\rVert$ with $\varepsilon=0.5$ \citep{miyato2017adversarial}, take a
+second forward pass, and sum clean and adversarial gradients before the
+optimiser step. After epoch~10 we compute a stochastic weight average
+\citep{izmailov2018swa} over remaining checkpoints as the final model.
 
 \subsubsection{Bucket 3: Architecture}
 
-This bucket collects structural changes to the model itself, whether
-by re-shaping the task into multiple stages or by swapping the
-underlying encoder.
+Structural changes to the model: re-shaping the task into stages or
+swapping the encoder.
 
-\paragraph{Structured prediction pipelines.} Beyond token-level
-classification, we implement four structured variants:
+\paragraph{Structured prediction pipelines.} Four structured variants:
 
 \begin{description}
 \itemsep0em
@@ -402,8 +357,7 @@ and training schedule.
 \subsubsection{Bucket 4: Ensemble techniques}
 \label{sec:ensemble}
 
-The final bucket combines trained models rather than retraining new
-ones. We consider both weight-space averaging (model soup) and
+Combining trained models: weight-space averaging (model soup) and
 prediction-space combination (majority vote / probability averaging).
 
 \paragraph{Weight-space model soup.} For a given family we fine-tune
@@ -566,13 +520,10 @@ run due to compute budget.}
 \subsection{Model soup}
 
 The best soup averages the top-$3$ checkpoints of the Recall-Boost
-seed-42 LR sweep and reaches relaxed F1 $= 0.595$, i.e.\ exactly the
-plain DeBERTa baseline, with strict F1 $0.331$ (the strict number is
-worse). Soup recovers some of the damage from the Recall-Boost
-experiment but does not exceed the un-souped baseline. This is
-consistent with the findings of \citet{wortsman2022modelsoup}: soup
-helps when the underlying recipe is already competitive, and does not
-rescue weaker recipes.
+seed-42 sweep and reaches relaxed F1 $=0.595$ (strict $0.331$) ---
+matching the plain baseline but not exceeding it, consistent with
+\citet{wortsman2022modelsoup}: soup helps competitive recipes and does
+not rescue weaker ones.
 
 \subsection{Ensemble search}
 
@@ -863,7 +814,7 @@ Model soup (recall-boost s42)             & 0.595 & 0.331 & 2e-5 \\
 \end{tabular}
 \caption{Full LR-selected ablation (dev F1). Strict F1 for GLiNER
 variants is not exposed by the toolkit. GPT-4o 3-shot and DeBERTa SOTA
-numbers are reported from \citet{garg2025reddit} on the same dev split.}
+numbers are reported from \citet{dey2025reddit} on the same dev split.}
 \label{tab:full}
 \end{table}
 
