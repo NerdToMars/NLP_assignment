@@ -1,0 +1,273 @@
+\documentclass[11pt]{article}
+
+\usepackage[final]{acl}
+
+\usepackage{times}
+\usepackage{latexsym}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{microtype}
+\usepackage{inconsolata}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{multirow}
+\usepackage{array}
+\usepackage{xcolor}
+
+\title{Extracting Social and Clinical Impacts of Substance Use\\
+from Reddit with Structured Pipelines and Ensemble Search}
+
+\author{Ismail Elyamany, \ Chongtian Huang, \ Yitong Xia, \ Ruijie Zhu\\
+Nanyang Technological University \\
+\texttt{\{ismailma001, chongtia002, yitong010, ruijie008\}@e.ntu.edu.sg}
+}
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We present our solution to SMM4H--HeaRD~2026 Task~7, which extracts \emph{Clinical} and \emph{Social} impacts of substance use from Reddit posts as token-level BIO tagging. The benchmark is hard because the label prior flips between train ($\approx$75\% Clinical) and test ($\approx$70\% Social), and many impacts are implicit colloquialisms.
+We compare five model families under a consistent LR sweep and a paired raw-vs-preprocessed protocol, organizing our contributions into four buckets (imbalanced-inputs training, advanced regularization, architecture, and ensemble techniques). Our best single model, definition prompting, achieves a relaxed F1 of $ 0.613$; a four-model majority-vote ensemble achieves $0.635$, beating the published baseline on the same dev split by $+0.025$. On the official leaderboard, our method placed \textbf{5th of 11} teams (strict F1 $= 0.49$, relaxed F1 $= 0.45$). 
+% This reveals a significant lesson: training-objective diversity plus hard voting is a stronger lever than polishing any single model.
+\end{abstract}
+
+\section{Introduction}
+
+Public-health surveillance on social media is an important source of
+population-level signal for substance-use disorders
+\citep{sarker2019social}. SMM4H--HeaRD 2026 Track~7 asks systems to extract two classes of consequences from opioid-subreddit posts:
+\emph{ClinicalImpacts} (e.g.\ overdose, withdrawal) and
+\emph{SocialImpacts} (e.g.\ job loss, arrest), formulated as BIO tagging
+over five tags. The benchmark is unusually difficult: the training split
+is Clinical-heavy ($\approx$75\%), test flips to Social ($\approx$70\%),
+and many impacts are \emph{implicit}---``those weeks were hell'' is a
+Clinical span without any clinical token. The published baseline reaches
+relaxed F1 $= 0.610$, with inter-annotator agreement $\approx 0.81$
+\citep{dey2025reddit}.
+
+We treat this as a systems problem and compare five model families
+under a uniform LR sweep and a paired raw-vs-preprocessed protocol.
+Our contributions are: (i) a disciplined baseline study across
+BiLSTM--CRF, GLiNER, SocBERT, StressRoBERTa, and DeBERTa-v3-large,
+showing general-purpose DeBERTa dominates Reddit- and
+mental-health-adapted encoders; (ii) a paired protocol in which
+preprocessing is a first-class experimental variable; (iii) four
+bucket-level innovations---imbalanced-inputs training, regularization,
+architecture, and ensembling---mostly layered on DeBERTa; and (iv) an
+exhaustive cross-regime ensemble search whose four-model majority vote
+reaches relaxed F1 $= \textbf{0.635}$, $+0.025$ over the published
+baseline. The single clearest takeaway is that
+\emph{training-objective diversity} combined with hard majority voting
+beats polishing any individual recipe.
+
+Health-focused NER on social media has been studied for medications and adverse events \citep{sarker2019social,weissenbacher2022overview}; Reddit-Impacts~2.0 \citep{dey2025reddit} is distinctive in separating Clinical from Social outcomes and flipping the label prior. Reddit-and mental-health-adapted encoders \citep{guo2023socbert,stressroberta2022} typically help when register matches, but generic DeBERTa-v3 \citep{he2023debertav3} outperforms both here. GLiNER \citep{zaratiana2024gliner} provides open-type span scoring. Our regularization and ensembling buckets combine off-the-shelf ingredients \citep{lin2017focal,liang2021rdrop,miyato2017adversarial,izmailov2018swa,wortsman2022modelsoup,kuncheva2003measures}; the novelty is the exhaustive cross-regime subset search. Prior SMM4H iterations were topped by encoder-LM ensembles \citep{obeidat2024ukynlp} and, at 2025, a fine-tuning-free LLM pipeline \citep{pradhan2025llmpros,klein2025overview}.
+
+\section{Task and Data}
+\label{sec:data}
+
+Reddit-Impacts~2.0 contains $1{,}378$ opioid-subreddit posts in fixed
+train/dev/test splits (dev: $258$ documents). Train and dev are
+Clinical-heavy; test flips to $\approx$70\% Social. Social spans are
+longer and heavier-tailed than Clinical, and a majority of dev posts
+contain no entities at all, which motivates a sentence-level presence
+head as an auxiliary signal. We report \textbf{Relaxed} F1 (type
+correct, $\geq$1-token overlap) and \textbf{Strict} F1 (exact
+boundaries). Dev-set performance is the primary selection criterion
+because test labels were not released during the study.
+
+\subsection{Preprocessing}
+\label{sec:preproc}
+
+Every family is run twice: \textbf{raw} (original Reddit text) and \textbf{preprocessed}, with four token-aligned operations---mojibake normalization, user/URL placeholder substitution, deletion of emoji, punctuation-only tokens, and metadata markers, and post-hoc realignment at inference. The effect is family-specific: BiLSTM--CRF and GLiNER gain markedly ($+0.045$ and $+0.061$); plain DeBERTa is actually \emph{stronger} on raw text ($0.595$ vs $0.545$), consistent with large encoders already being robust to Reddit noise. Definition prompting and R-Drop perform best only in the preprocessed regime.
+
+\section{Methods}
+\label{sec:methods}
+
+\paragraph{Model families.} BiLSTM--CRF (frozen GloVe-300d, $2\times256$
+BiLSTM, CRF) as a sanity check. GLiNER \citep{zaratiana2024gliner}
+fine-tuned and span-nested variants. SocBERT (Reddit-domain) and
+StressRoBERTa (mental-health) as domain-adapted encoders. Our main
+backbone is DeBERTa-v3-large with a linear token head.
+
+\paragraph{Bucket~1: Imbalanced-inputs training.}
+\textbf{Focal loss} ($\gamma=2.0$, $\alpha$ from smoothed inverse
+frequency with Social $\times 1.5$). \textbf{Definition prompting}
+prepends a first-person class description with guideline exemplars,
+separated by \texttt{[SEP]} and masked from the loss---the single
+best single-model recipe. \textbf{Multi-task} shares the encoder with
+a \texttt{[CLS]} presence head ($\mathcal{L}=\mathcal{L}_{\text{tok}}+
+0.3\,\mathcal{L}_{\text{pres}}$). \textbf{Recall-Boost} downweights
+\texttt{O} to $0.2$ and upweights Social to $1.5$, stacked on the
+multi-task head.
+
+\paragraph{Bucket~2: Advanced regularisation.} \textbf{R-Drop}
+\citep{liang2021rdrop}: two stochastic passes with symmetric-KL
+disagreement penalty. \textbf{FGM~$+$~SWA} perturbs
+\texttt{word\_embeddings} by $\varepsilon=0.5$ per step
+\citep{miyato2017adversarial} and averages checkpoints from epoch~10
+\citep{izmailov2018swa}.
+
+\paragraph{Bucket~3: Architecture.} Four structured pipelines are introduced.
+\emph{Hierarchical DeBERTa}: a sentence classifier gates the token
+head; training retains every positive sentence and 10\% of no-impact
+sentences. \emph{Two-Step Impact}: a binary span extractor followed by
+a Clinical/Social typing head, trained independently. \emph{Sentence
+$+$ Token}: joint training of presence and BIO heads.
+\emph{Span-nested GLiNER}: nested-span enumeration with overlap-aware
+decoding. We also swap DeBERTa for SocBERT and StressRoBERTa under the
+same schedule.
+
+\paragraph{Bucket~4: Ensembling.} \textbf{Model soup} averages top-$K$
+dev-F1 checkpoints within a family. \textbf{Prediction-space search}:
+(a) cross-regime majority vote over the top-7 relaxed and top-7 strict
+candidates per regime ($\leq 28$ unique), evaluating all $122{,}409$
+size-2--5 subsets; (b) probability averaging over 7 raw-regime
+candidates ($112$ subsets), excluding span/pipeline families that do
+not emit per-token distributions.
+
+\paragraph{Training setup.} AdamW (with a weight decay of $0.01$), dropout $0.1$, 10\%
+linear warmup and linear decay, length $512$, clip $1.0$. DeBERTa LR
+sweep $\{5{\rm e}{-4},2{\rm e}{-5},5{\rm e}{-5}\}$; GLiNER
+$\{5{\rm e}{-6},1{\rm e}{-5},2{\rm e}{-5}\}$. Most recipes are trained for
+30 epochs at batchsize 30; the R-Drop/FGM$+$SWA variant is trained for 90/120 epochs at effective batchsize 32; the four structure pipelines are trained for 10 epochs at batchsize 16.
+
+\section{Experiments}
+\label{sec:exp}
+
+\subsection{Single-model results}
+
+Table~\ref{tab:core} aggregates all single-model dev scores. Both domain-adapted encoders underperform DeBERTa even in their preferred regime. On top of DeBERTa, only definition prompting (preprocessed: $0.613$) clears the best baseline regime (raw: $0.595$); other recipes improve on the preprocessed baseline, but none crosses the raw baseline---they earn their keep through error decorrelation.
+As a result, Hierarchical DeBERTa is the strongest pipeline (raw: $0.604$) and serves as the anchor of our final ensemble.
+
+\begin{table}[t]
+\centering\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{l cc cc}
+\toprule
+& \multicolumn{2}{c}{Raw} & \multicolumn{2}{c}{Prep} \\
+Model / Recipe & R & S & R & S \\
+\midrule
+BiLSTM--CRF                   & 0.251 & -- & 0.296 & -- \\
+GLiNER (fine-tuned)           & 0.463 & -- & 0.524 & -- \\
+SocBERT                       & -- & -- & 0.404 & 0.277 \\
+StressRoBERTa                 & -- & -- & 0.482 & 0.270 \\
+\midrule
+DeBERTa baseline              & 0.595 & 0.409 & 0.545 & 0.421 \\
+\ \ + Focal loss              & 0.541 & 0.341 & 0.538 & 0.358 \\
+\ \ + Multi-task              & 0.581 & 0.382 & 0.550 & 0.394 \\
+\ \ + \textbf{Definition}     & 0.575 & 0.350 & \textbf{0.613} & \textbf{0.410} \\
+\ \ + Recall-Boost            & 0.582 & 0.312 & 0.560 & 0.330 \\
+\ \ + R-Drop                  & 0.561 & 0.360 & 0.577 & 0.380 \\
+\ \ + FGM$+$SWA               & 0.573 & 0.356 & 0.547 & 0.256 \\
+\midrule
+Hierarchical DeBERTa          & \textbf{0.604} & 0.372 & 0.559 & 0.383 \\
+Two-Step Impact               & -- & -- & 0.534 & \textbf{0.404} \\
+Sentence $+$ Token            & -- & -- & 0.530 & 0.375 \\
+Span-nested GLiNER            & -- & -- & 0.443 & 0.491 \\
+\bottomrule
+\end{tabular}
+\caption{All single-model results, dev Relaxed / Strict F1. Best LR per
+family selected within each regime; dashes indicate configurations not
+run or not exposed by the toolkit.}
+\label{tab:core}
+\end{table}
+
+\subsection{Ensemble search}
+\label{sec:ensemble}
+
+Table~\ref{tab:ensemble} reports the cross-regime majority-vote search
+(size-2--5 subsets, $122{,}409$ combinations) and the best
+probability-average result. The four-model majority ensemble gains
+$+0.022$ over the best single model and $+0.025$ over the published
+baseline; the strict optimum is a five-model subset at $0.518$. Hard
+voting consistently beats soft averaging ($0.635$ vs $0.614$): on a
+small, noisy benchmark with decorrelated errors, capping each member
+at one vote is worth more than the information lost by discretization.
+The best soup (top-3 Recall-Boost seed-42) reaches only $0.595$,
+matching but not exceeding the baseline. The winning four-model subset
+pairs Hierarchical DeBERTa with a preprocessed definition-prompting
+run and two raw-regime runs; the gain comes from both
+\emph{preprocessing} and \emph{objective} diversity.
+
+\begin{table}[t]
+\centering\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lcccc}
+\toprule
+Ensemble & R & S & Prec. & Rec. \\
+\midrule
+2 models (majority)          & 0.623 & 0.465 & 0.586 & 0.664 \\
+3 models (majority)          & 0.621 & 0.507 & 0.638 & 0.605 \\
+\textbf{4 models (majority)} & \textbf{0.635} & 0.509 & 0.648 & 0.623 \\
+5 models (majority)          & 0.631 & \textbf{0.518} & 0.670 & 0.597 \\
+Prob.\ avg.\ (raw)           & 0.614 & 0.431 & 0.653 & 0.580 \\
+\bottomrule
+\end{tabular}
+\caption{Ensemble search. Majority vote across $122{,}409$ size-2--5
+subsets; probability average across $112$ raw-regime subsets.}
+\label{tab:ensemble}
+\end{table}
+
+\subsection{Shared-task leaderboard}
+\label{sec:leaderboard}
+
+Our submitted system placed \textbf{5th of 11} teams on the official SMM4H--HeaRD~2026 Task~7 leaderboard \citep{smm4h-heard-overview-2026}; Table~\ref{tab:leaderboard} gives the test-set results in context. The submitted system was an earlier configuration than the four-model ensemble (finalized after the deadline, therefore unverified on test), and the strict/relaxed
+ordering flips relative to dev, consistent with the test split being
+dominated by longer, multi-token Social spans.
+
+\begin{table}[t]
+\centering\small
+\setlength{\tabcolsep}{5pt}
+\begin{tabular}{llcc}
+\toprule
+Rank & Team & Strict & Relaxed \\
+\midrule
+1 & top\textsuperscript{*}          & 0.53 & 0.60 \\
+2 & runner-up\textsuperscript{*}    & 0.51 & 0.60 \\
+3 & third\textsuperscript{*}        & 0.50 & 0.58 \\
+\textbf{5} & \textbf{Ours}          & \textbf{0.49} & \textbf{0.45} \\
+-- & Median\textsuperscript{*}      & 0.48 & 0.58 \\
+\bottomrule
+\end{tabular}
+\caption{Test-set leaderboard. \textsuperscript{*}placeholders pending
+the official overview \citep{smm4h-heard-overview-2026}.}
+\label{tab:leaderboard}
+\end{table}
+
+\section{Error Analysis}
+\label{sec:error}
+
+On the best single model (definition prompting, $0.613/0.410$),
+\textbf{boundary errors} on multi-word Social phrases (``charged with
+disorderly conduct'') account for almost all of the relaxed--strict
+gap, and \textbf{implicit false negatives}---single-token colloquial
+Clinical spans (``hell'', ``broken'', ``numb'')---are the dominant
+missed category. Negation is handled reliably; third-person references
+are over-rejected. These point to boundary-aware decoding, targeted
+augmentation, and a perspective-tagging auxiliary signal as future work.
+
+\section{Conclusion}
+\label{sec:conclusion}
+
+We presented a systematic study of the Reddit-Impacts impact-extraction
+task, organized as four contribution buckets (imbalanced-inputs
+training, advanced regularisation, architecture, and ensemble
+techniques) most layered on a DeBERTa backbone. Our best single model, definition
+prompting, reaches relaxed F1 $= 0.613$. Our best system, a four-model
+majority-vote ensemble, reaches $0.635$. on the official SMM4H--HeaRD~2026
+Task~7 leaderboard our submission placed \textbf{5th of 11} teams
+(strict F1 $=0.49$, relaxed F1 $=0.45$). The pattern across buckets is consistent:
+no single regularisation trick beats a well-tuned DeBERTa, and the
+headroom comes from combining decorrelated recipes via hard voting.
+We see the $\approx 0.18$ gap to the human ceiling as coming mainly
+from boundary decoding and implicit-expression recall, and view these
+as the most promising directions for future work.
+
+\section*{Acknowledgments}
+
+We thank the CE7455 course staff at NTU and the SMM4H--HeaRD 2026
+shared-task organizers for releasing Reddit-Impacts 2.0.
+
+\bibliography{custom}
+
+\end{document}
